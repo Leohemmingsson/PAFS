@@ -24,9 +24,9 @@ def ensure_playwright_browsers() -> None:
 
     # If dry-run shows browsers need to be installed, install them
     if "chromium" in result.stdout.lower() or result.returncode != 0:
-        print("Installing Playwright Chromium browser (first-time setup)...")
+        print("Installing browser (first run)...")
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-        print("Browser installation complete.")
+        print("Browser installed")
 
 SETTINGS_DIR = Path(".pafs")
 FLOWS_FILE = SETTINGS_DIR / "flows.json"
@@ -122,7 +122,7 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
             auth_header = request.headers.get("authorization", "")
             if auth_header.startswith("Bearer ") and captured_token is None:
                 captured_token = auth_header.removeprefix("Bearer ")
-                print(f"[+] Captured token from: {request.url[:80]}...")
+                print("Token captured")
 
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +136,7 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
         page.on("request", on_request)
         context.on("page", lambda new_page: new_page.on("request", on_request))
 
-        print("Opening browser to capture token...")
+        print("Opening browser...")
         page.goto(flow_url, wait_until="commit")
 
         # Poll until we capture a token or timeout
@@ -152,7 +152,7 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
                 current_url = page.url
                 if _is_login_page(current_url):
                     if not login_prompt_shown:
-                        print("[*] Login required. Please complete authentication in the browser...")
+                        print("Login required - complete authentication in browser")
                         login_prompt_shown = True
                 page.wait_for_timeout(poll_interval_ms)
             except Exception:
@@ -166,7 +166,7 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
 
     # Save the token for future use
     save_token(captured_token)
-    print("[+] Token saved for future use")
+    print("Token saved")
     return captured_token
 
 
@@ -180,7 +180,7 @@ def api_request_with_auth(func, flow_url: str, *args, **kwargs):
         except urllib.error.HTTPError as e:
             if e.code != 401:
                 raise
-            print("[!] Token expired, refreshing...")
+            print("Token expired, refreshing...")
             clear_token()
 
     # Get new token and retry
@@ -205,7 +205,7 @@ def is_git_initialized() -> bool:
 def git_commit_files(files: list[str], message: str) -> None:
     """Add and commit files to git. Shows warning if git is not initialized."""
     if not is_git_initialized():
-        print("Warning: Git is not initialized, run 'pafs init' to sync with git")
+        print("Git not initialized. Run 'pafs init' to enable git tracking")
         return
 
     subprocess.run(["git", "add"] + files, check=True)
@@ -213,7 +213,7 @@ def git_commit_files(files: list[str], message: str) -> None:
     result = subprocess.run(["git", "diff", "--cached", "--quiet"])
     if result.returncode != 0:
         subprocess.run(["git", "commit", "-m", message], check=True)
-        print("Git commit created")
+        print("Committed to git")
     else:
         print("No changes to commit")
 
@@ -250,7 +250,7 @@ def cmd_init() -> None:
         print("Already initialized")
         return
 
-    print("Initializing pafs folder...")
+    print("Initializing...")
 
     # Initialize git if needed
     if not git_initialized:
@@ -277,7 +277,7 @@ def cmd_init() -> None:
         result = subprocess.run(["git", "diff", "--cached", "--quiet"])
         if result.returncode != 0:
             subprocess.run(["git", "commit", "-m", "Initial pafs commit"], check=True)
-            print("Git commit created")
+            print("Committed to git")
         else:
             print("No changes to commit")
     else:
@@ -305,12 +305,12 @@ def cmd_del(label: str) -> None:
     flows = load_flows()
 
     if label not in flows:
-        print(f"Flow '{label}' not found in registry")
+        print(f"Flow '{label}' not found")
         return
 
     del flows[label]
     save_flows(flows)
-    print(f"Removed '{label}' from registry")
+    print(f"Removed '{label}'")
 
     # Delete the JSON file if it exists
     flow_file = Path(f"{label}.json")
@@ -324,7 +324,7 @@ def cmd_list() -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Use 'flow add <label> <url>' first.")
+        print("No flows registered. Run 'pafs add <label> <url>' to add one")
         return
 
     for label in flows:
@@ -336,7 +336,7 @@ def cmd_sync(labels: list[str] | None) -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Use 'flow add <label> <url>' first.")
+        print("No flows registered. Run 'pafs add <label> <url>' to add one")
         return
 
     # Determine which flows to sync
@@ -344,12 +344,12 @@ def cmd_sync(labels: list[str] | None) -> None:
         to_sync = {l: flows[l] for l in labels if l in flows}
         missing = [l for l in labels if l not in flows]
         if missing:
-            print(f"Warning: flows not found: {', '.join(missing)}")
+            print(f"Flows not found: {', '.join(missing)}")
     else:
         to_sync = flows
 
     if not to_sync:
-        print("No flows to sync")
+        print("Nothing to sync")
         return
 
     synced_files = []
@@ -365,7 +365,7 @@ def cmd_sync(labels: list[str] | None) -> None:
         file_path = Path(f"{label}.json")
         file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
         synced_files.append(str(file_path))
-        print(f"  Saved to {file_path}")
+        print(f"  Saved {file_path}")
 
     if synced_files:
         git_commit_files(synced_files, "Synced from Power Automate")
@@ -376,7 +376,7 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Use 'flow add <label> <url>' first.")
+        print("No flows registered. Run 'pafs add <label> <url>' to add one")
         return
 
     # Determine which flows to push
@@ -384,12 +384,12 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
         to_push = {l: flows[l] for l in labels if l in flows}
         missing = [l for l in labels if l not in flows]
         if missing:
-            print(f"Warning: flows not found: {', '.join(missing)}")
+            print(f"Flows not found: {', '.join(missing)}")
     else:
         to_push = flows
 
     if not to_push:
-        print("No flows to push")
+        print("Nothing to push")
         return
 
     pushed_files = []
@@ -397,7 +397,7 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
     for label, flow_info in to_push.items():
         file_path = Path(f"{label}.json")
         if not file_path.exists():
-            print(f"Warning: {file_path} not found, skipping '{label}'")
+            print(f"Skipping '{label}': {file_path} not found")
             continue
 
         env_id = flow_info["environment_id"]
@@ -408,12 +408,12 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
         try:
             flow_data = json.loads(file_path.read_text())
         except json.JSONDecodeError as e:
-            print(f"Error: Invalid JSON in {file_path}: {e}")
+            print(f"Skipping '{label}': invalid JSON in {file_path}")
             continue
 
         api_request_with_auth(update_flow, flow_url, flow_data, env_id, flow_id)
         pushed_files.append(str(file_path))
-        print(f"  Uploaded from {file_path}")
+        print(f"  Pushed {file_path}")
 
     if pushed_files:
         git_commit_files(pushed_files, message)
