@@ -10,6 +10,22 @@ from playwright.sync_api import Request, sync_playwright
 
 from .pa_api import get_flow, update_flow
 
+
+def ensure_playwright_browsers() -> None:
+    """Install Playwright Chromium browser if not already installed."""
+    # Check if playwright browsers are installed by looking for the chromium executable
+    result = subprocess.run(
+        ["playwright", "install", "--dry-run", "chromium"],
+        capture_output=True,
+        text=True,
+    )
+
+    # If dry-run shows browsers need to be installed, install them
+    if "chromium" in result.stdout.lower() or result.returncode != 0:
+        print("Installing Playwright Chromium browser (first-time setup)...")
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+        print("Browser installation complete.")
+
 SETTINGS_DIR = Path(".pafs")
 FLOWS_FILE = SETTINGS_DIR / "flows.json"
 TOKEN_FILE = SETTINGS_DIR / "token.json"
@@ -92,6 +108,9 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
     saved_token = load_token()
     if saved_token:
         return saved_token
+
+    # Ensure browser is installed before launching
+    ensure_playwright_browsers()
 
     captured_token: str | None = None
 
