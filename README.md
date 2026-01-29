@@ -6,7 +6,7 @@ Manage Power Automate flows with automatic token handling.
 
 ### Prerequisites
 
-- Python 3.14 or later
+- Python 3.10 or later
 - Git configured with access to this repository
 
 ### Install with pipx (recommended)
@@ -66,6 +66,9 @@ pipx uninstall pafs
 ## Usage
 
 ```bash
+# Initialize git repo for flow tracking
+pafs init
+
 # Add a flow to track
 pafs add <label> <power-automate-url>
 

@@ -192,6 +192,97 @@ def build_flow_url(environment_id: str, flow_id: str) -> str:
     return f"https://make.powerautomate.com/environments/{environment_id}/flows/{flow_id}/details"
 
 
+def is_git_initialized() -> bool:
+    """Check if git is initialized in the current directory."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def git_commit_files(files: list[str], message: str) -> None:
+    """Add and commit files to git. Shows warning if git is not initialized."""
+    if not is_git_initialized():
+        print("Warning: Git is not initialized, run 'pafs init' to sync with git")
+        return
+
+    subprocess.run(["git", "add"] + files, check=True)
+    # Only commit if there are staged changes
+    result = subprocess.run(["git", "diff", "--cached", "--quiet"])
+    if result.returncode != 0:
+        subprocess.run(["git", "commit", "-m", message], check=True)
+        print("Git commit created")
+    else:
+        print("No changes to commit")
+
+
+def _ensure_gitignore_has_pafs() -> bool:
+    """Ensure .pafs is in .gitignore. Returns True if file was modified."""
+    gitignore = Path(".gitignore")
+    pafs_entry = ".pafs"
+
+    if gitignore.exists():
+        content = gitignore.read_text()
+        # Check if .pafs is already in gitignore (as its own line)
+        lines = content.splitlines()
+        if pafs_entry in lines:
+            return False
+        # Append .pafs
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += f"{pafs_entry}\n"
+        gitignore.write_text(content)
+    else:
+        gitignore.write_text(f"{pafs_entry}\n")
+
+    return True
+
+
+def cmd_init() -> None:
+    """Initialize git repo and commit any existing flow JSON files."""
+    git_initialized = is_git_initialized()
+    gitignore_has_pafs = Path(".gitignore").exists() and ".pafs" in Path(".gitignore").read_text().splitlines()
+
+    # Already fully initialized
+    if git_initialized and gitignore_has_pafs:
+        print("Already initialized")
+        return
+
+    print("Initializing pafs folder...")
+
+    # Initialize git if needed
+    if not git_initialized:
+        subprocess.run(["git", "init"], check=True)
+
+    # Ensure .pafs is in .gitignore
+    gitignore_modified = _ensure_gitignore_has_pafs()
+
+    # Collect files to commit
+    files_to_commit = []
+
+    if gitignore_modified:
+        files_to_commit.append(".gitignore")
+
+    # Find flows that have JSON files on disk
+    flows = load_flows()
+    for label in flows:
+        file_path = Path(f"{label}.json")
+        if file_path.exists():
+            files_to_commit.append(str(file_path))
+
+    if files_to_commit:
+        subprocess.run(["git", "add"] + files_to_commit, check=True)
+        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if result.returncode != 0:
+            subprocess.run(["git", "commit", "-m", "Initial pafs commit"], check=True)
+            print("Git commit created")
+        else:
+            print("No changes to commit")
+    else:
+        print("No files to commit")
+
+
 def cmd_add(label: str, url: str) -> None:
     """Add a flow to the registry."""
     environment_id, flow_id = parse_flow_url(url)
@@ -276,17 +367,7 @@ def cmd_sync(labels: list[str] | None) -> None:
         print(f"  Saved to {file_path}")
 
     if synced_files:
-        subprocess.run(["git", "add"] + synced_files, check=True)
-        # Only commit if there are staged changes
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(
-                ["git", "commit", "-m", "Synced from Power Automate"],
-                check=True,
-            )
-            print("Git commit created")
-        else:
-            print("No changes to commit")
+        git_commit_files(synced_files, "Synced from Power Automate")
 
 
 def cmd_push(labels: list[str] | None, message: str) -> None:
@@ -334,14 +415,7 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
         print(f"  Uploaded from {file_path}")
 
     if pushed_files:
-        subprocess.run(["git", "add"] + pushed_files, check=True)
-        # Only commit if there are staged changes
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(["git", "commit", "-m", message], check=True)
-            print("Git commit created")
-        else:
-            print("No changes to commit")
+        git_commit_files(pushed_files, message)
 
 
 def main() -> None:
@@ -350,6 +424,9 @@ def main() -> None:
         description="Manage Power Automate flows with automatic token handling",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # init
+    subparsers.add_parser("init", help="Initialize git repo for flow tracking")
 
     # add
     add_parser = subparsers.add_parser("add", help="Add a flow to the registry")
@@ -393,7 +470,9 @@ def main() -> None:
             return None
         return [l.strip() for l in labels_str.split(",") if l.strip()]
 
-    if args.command == "add":
+    if args.command == "init":
+        cmd_init()
+    elif args.command == "add":
         cmd_add(args.label, args.url)
     elif args.command == "del":
         cmd_del(args.label)
