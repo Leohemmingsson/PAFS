@@ -1,5 +1,6 @@
 
 import argparse
+import importlib.metadata
 import json
 import re
 import subprocess
@@ -420,8 +421,13 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="flow",
+        prog="pafs",
         description="Manage Power Automate flows with automatic token handling",
+    )
+    parser.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('pafs')}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
