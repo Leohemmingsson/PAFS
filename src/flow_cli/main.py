@@ -2,7 +2,6 @@
 import argparse
 import importlib.metadata
 import json
-import re
 import subprocess
 import sys
 import urllib.error
@@ -11,6 +10,19 @@ from pathlib import Path
 from playwright.sync_api import Request, sync_playwright
 
 from .pa_api import get_flow, update_flow
+from .shared import (
+    BROWSER_DATA_DIR,
+    SETTINGS_DIR,
+    _ensure_gitignore_has_pafs,
+    build_flow_url,
+    clear_token,
+    is_git_initialized,
+    load_flows,
+    load_token,
+    parse_flow_url,
+    save_flows,
+    save_token,
+)
 
 
 def ensure_playwright_browsers() -> None:
@@ -27,62 +39,6 @@ def ensure_playwright_browsers() -> None:
         print("Installing browser (first run)...")
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
         print("Browser installed")
-
-SETTINGS_DIR = Path(".pafs")
-FLOWS_FILE = SETTINGS_DIR / "flows.json"
-TOKEN_FILE = SETTINGS_DIR / "token.json"
-BROWSER_DATA_DIR = SETTINGS_DIR / "browser-data"
-
-
-def load_token() -> str | None:
-    """Load saved token from .settings/token.json."""
-    if not TOKEN_FILE.exists():
-        return None
-    try:
-        data = json.loads(TOKEN_FILE.read_text())
-        return data.get("token")
-    except (json.JSONDecodeError, KeyError):
-        return None
-
-
-def save_token(token: str) -> None:
-    """Save token to .settings/token.json."""
-    SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps({"token": token}, indent=2) + "\n")
-
-
-def clear_token() -> None:
-    """Clear the saved token."""
-    if TOKEN_FILE.exists():
-        TOKEN_FILE.unlink()
-
-
-def load_flows() -> dict:
-    """Load the flows registry from .settings/flows.json."""
-    if not FLOWS_FILE.exists():
-        return {}
-    try:
-        return json.loads(FLOWS_FILE.read_text())
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Invalid JSON in {FLOWS_FILE}: {e}") from e
-
-
-def save_flows(flows: dict) -> None:
-    """Save the flows registry to .settings/flows.json."""
-    SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    FLOWS_FILE.write_text(json.dumps(flows, indent=2) + "\n")
-
-
-def parse_flow_url(url: str) -> tuple[str, str]:
-    """Parse a Power Automate URL to extract environment_id and flow_id.
-
-    URL format: https://make.powerautomate.com/environments/<env_id>/flows/<flow_id>/details
-    """
-    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/flows/([^/]+)"
-    match = re.match(pattern, url)
-    if not match:
-        raise ValueError(f"Invalid Power Automate URL format: {url}")
-    return match.group(1), match.group(2)
 
 
 def _is_login_page(url: str) -> bool:
@@ -188,20 +144,6 @@ def api_request_with_auth(func, flow_url: str, *args, **kwargs):
     return func(token, *args, **kwargs)
 
 
-def build_flow_url(environment_id: str, flow_id: str) -> str:
-    """Build a Power Automate URL from environment_id and flow_id."""
-    return f"https://make.powerautomate.com/environments/{environment_id}/flows/{flow_id}/details"
-
-
-def is_git_initialized() -> bool:
-    """Check if git is initialized in the current directory."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
 def git_commit_files(files: list[str], message: str) -> None:
     """Add and commit files to git. Shows warning if git is not initialized."""
     if not is_git_initialized():
@@ -216,28 +158,6 @@ def git_commit_files(files: list[str], message: str) -> None:
         print("Committed to git")
     else:
         print("No changes to commit")
-
-
-def _ensure_gitignore_has_pafs() -> bool:
-    """Ensure .pafs is in .gitignore. Returns True if file was modified."""
-    gitignore = Path(".gitignore")
-    pafs_entry = ".pafs"
-
-    if gitignore.exists():
-        content = gitignore.read_text()
-        # Check if .pafs is already in gitignore (as its own line)
-        lines = content.splitlines()
-        if pafs_entry in lines:
-            return False
-        # Append .pafs
-        if content and not content.endswith("\n"):
-            content += "\n"
-        content += f"{pafs_entry}\n"
-        gitignore.write_text(content)
-    else:
-        gitignore.write_text(f"{pafs_entry}\n")
-
-    return True
 
 
 def cmd_init() -> None:
@@ -407,7 +327,7 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
         print(f"Pushing '{label}'...")
         try:
             flow_data = json.loads(file_path.read_text())
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             print(f"Skipping '{label}': invalid JSON in {file_path}")
             continue
 
@@ -417,6 +337,72 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
 
     if pushed_files:
         git_commit_files(pushed_files, message)
+
+
+def cmd_auth() -> None:
+    """Authenticate with Power Automate by opening a browser to capture a token."""
+    # Clear any existing token to force re-authentication
+    clear_token()
+    print("Cleared existing token")
+
+    # Use a generic Power Automate URL to trigger authentication
+    auth_url = "https://make.powerautomate.com/"
+
+    # Ensure browser is installed before launching
+    ensure_playwright_browsers()
+
+    captured_token: str | None = None
+
+    def on_request(request: Request) -> None:
+        nonlocal captured_token
+        if "api.flow.microsoft.com" in request.url:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer ") and captured_token is None:
+                captured_token = auth_header.removeprefix("Bearer ")
+                print("Token captured")
+
+    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(BROWSER_DATA_DIR),
+            headless=False,
+        )
+
+        page = context.pages[0]
+        page.on("request", on_request)
+        context.on("page", lambda new_page: new_page.on("request", on_request))
+
+        print("Opening browser for authentication...")
+        page.goto(auth_url, wait_until="commit")
+
+        # Poll until we capture a token or timeout
+        timeout_seconds = 300
+        login_prompt_shown = False
+        poll_interval_ms = 500
+        max_polls = (timeout_seconds * 1000) // poll_interval_ms
+
+        for _ in range(max_polls):
+            if captured_token:
+                break
+
+            try:
+                current_url = page.url
+                if _is_login_page(current_url):
+                    if not login_prompt_shown:
+                        print("Login required - complete authentication in browser")
+                        login_prompt_shown = True
+                page.wait_for_timeout(poll_interval_ms)
+            except Exception:
+                break
+
+        context.close()
+
+    if not captured_token:
+        raise RuntimeError("Failed to capture authentication token")
+
+    save_token(captured_token)
+    print("Token saved successfully")
 
 
 def main() -> None:
@@ -433,6 +419,9 @@ def main() -> None:
 
     # init
     subparsers.add_parser("init", help="Initialize git repo for flow tracking")
+
+    # auth
+    subparsers.add_parser("auth", help="Authenticate with Power Automate")
 
     # add
     add_parser = subparsers.add_parser("add", help="Add a flow to the registry")
@@ -478,6 +467,8 @@ def main() -> None:
 
     if args.command == "init":
         cmd_init()
+    elif args.command == "auth":
+        cmd_auth()
     elif args.command == "add":
         cmd_add(args.label, args.url)
     elif args.command == "del":

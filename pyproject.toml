@@ -1,15 +1,17 @@
 [project]
 name = "pafs"
-version = "0.1.4"
+version = "0.1.5"
 description = "CLI tool for managing Power Automate flows"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.57.0",
+    "fastmcp>=2.0.0",
 ]
 
 [project.scripts]
 pafs = "flow_cli.main:main"
+pafs-mcp = "flow_cli.mcp_server:main"
 
 [tool.uv]
 package = true
