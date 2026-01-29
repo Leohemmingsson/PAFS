@@ -7,7 +7,6 @@ Manage Power Automate flows with automatic token handling.
 ### Prerequisites
 
 - Python 3.10 or later
-- Git configured with access to this repository
 
 ### Install with pipx (recommended)
 
@@ -35,12 +34,6 @@ pipx installs the tool globally while keeping dependencies isolated.
 
 2. Install PAFS:
 
-   **Using SSH:**
-   ```bash
-   pipx install git+ssh://git@github.com/Leohemmingsson/PAFS.git
-   ```
-
-   **Using HTTPS:**
    ```bash
    pipx install git+https://github.com/Leohemmingsson/PAFS.git
    ```
