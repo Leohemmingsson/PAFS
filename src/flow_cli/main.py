@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -13,9 +14,9 @@ from .pa_api import get_flow, update_flow
 
 def ensure_playwright_browsers() -> None:
     """Install Playwright Chromium browser if not already installed."""
-    # Check if playwright browsers are installed by looking for the chromium executable
+    # Use sys.executable to run playwright from the same venv as pafs
     result = subprocess.run(
-        ["playwright", "install", "--dry-run", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
         capture_output=True,
         text=True,
     )
@@ -23,7 +24,7 @@ def ensure_playwright_browsers() -> None:
     # If dry-run shows browsers need to be installed, install them
     if "chromium" in result.stdout.lower() or result.returncode != 0:
         print("Installing Playwright Chromium browser (first-time setup)...")
-        subprocess.run(["playwright", "install", "chromium"], check=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
         print("Browser installation complete.")
 
 SETTINGS_DIR = Path(".pafs")
