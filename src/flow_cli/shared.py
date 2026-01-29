@@ -3,7 +3,10 @@
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+from playwright.sync_api import Request, sync_playwright
 
 # Constants
 SETTINGS_DIR = Path(".pafs")
@@ -34,6 +37,93 @@ def clear_token() -> None:
     """Clear the saved token."""
     if TOKEN_FILE.exists():
         TOKEN_FILE.unlink()
+
+
+def _ensure_playwright_browsers() -> None:
+    """Install Playwright Chromium browser if not already installed."""
+    result = subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
+        capture_output=True,
+        text=True,
+    )
+    if "chromium" in result.stdout.lower() or result.returncode != 0:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True,
+        )
+
+
+def _is_login_page(url: str) -> bool:
+    """Check if the URL is a Microsoft login page."""
+    login_hosts = [
+        "login.microsoftonline.com",
+        "login.microsoft.com",
+        "login.live.com",
+        "account.microsoft.com",
+    ]
+    return any(host in url for host in login_hosts)
+
+
+def capture_token_via_browser(
+    url: str = "https://make.powerautomate.com/",
+    timeout_seconds: int = 300,
+) -> str:
+    """Open a browser to capture a Bearer token from Power Automate.
+
+    Args:
+        url: The URL to navigate to for authentication.
+        timeout_seconds: Maximum time to wait for authentication.
+
+    Returns:
+        The captured Bearer token.
+
+    Raises:
+        RuntimeError: If token capture fails or times out.
+    """
+    _ensure_playwright_browsers()
+
+    captured_token: str | None = None
+
+    def on_request(request: Request) -> None:
+        nonlocal captured_token
+        if "api.flow.microsoft.com" in request.url:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer ") and captured_token is None:
+                captured_token = auth_header.removeprefix("Bearer ")
+
+    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(BROWSER_DATA_DIR),
+            headless=False,
+        )
+
+        page = context.pages[0]
+        page.on("request", on_request)
+        context.on("page", lambda new_page: new_page.on("request", on_request))
+
+        page.goto(url, wait_until="commit")
+
+        poll_interval_ms = 500
+        max_polls = (timeout_seconds * 1000) // poll_interval_ms
+
+        for _ in range(max_polls):
+            if captured_token:
+                break
+            try:
+                page.wait_for_timeout(poll_interval_ms)
+            except Exception:
+                break
+
+        context.close()
+
+    if not captured_token:
+        raise RuntimeError("Failed to capture authentication token")
+
+    save_token(captured_token)
+    return captured_token
 
 
 # Flow registry functions

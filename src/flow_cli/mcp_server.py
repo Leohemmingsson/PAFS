@@ -11,6 +11,7 @@ from .pa_api import get_flow, update_flow
 from .shared import (
     _ensure_gitignore_has_pafs,
     build_flow_url,
+    capture_token_via_browser,
     clear_token,
     is_git_initialized,
     load_flows,
@@ -21,26 +22,26 @@ from .shared import (
 
 mcp = FastMCP(name="pafs")
 
-AUTH_ERROR = "Authentication required. Please run 'pafs auth' in a terminal first."
 
-
-def _get_token_or_error() -> str:
-    """Get the saved token or raise an error."""
+def _get_token() -> str:
+    """Get the saved token or capture a new one via browser."""
     token = load_token()
-    if not token:
-        raise RuntimeError(AUTH_ERROR)
-    return token
+    if token:
+        return token
+    return capture_token_via_browser()
 
 
 def _api_request(func, *args, **kwargs):
-    """Make an API request with token, returning error on 401."""
-    token = _get_token_or_error()
+    """Make an API request with token, refreshing via browser on 401."""
+    token = _get_token()
     try:
         return func(token, *args, **kwargs)
     except urllib.error.HTTPError as e:
         if e.code == 401:
+            # Token expired, try to get a new one via browser
             clear_token()
-            raise RuntimeError(f"Token expired. {AUTH_ERROR}") from e
+            token = capture_token_via_browser()
+            return func(token, *args, **kwargs)
         raise
 
 
@@ -201,13 +202,11 @@ def sync_flows(labels: str | None = None) -> dict:
             file_path = Path(f"{label}.json")
             file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
             synced.append(label)
-        except RuntimeError as e:
-            # Auth error - propagate immediately
-            raise
         except Exception as e:
             errors.append({"label": label, "error": str(e)})
 
     # Git commit if successful
+    git_committed = False
     if synced and is_git_initialized():
         files = [f"{l}.json" for l in synced]
         subprocess.run(["git", "add"] + files, check=True, capture_output=True)
@@ -218,13 +217,18 @@ def sync_flows(labels: str | None = None) -> dict:
                 check=True,
                 capture_output=True,
             )
+            git_committed = True
 
-    return {
+    result = {
         "status": "synced",
         "synced": synced,
         "errors": errors,
         "missing": missing,
+        "git_committed": git_committed,
     }
+    if synced and not is_git_initialized():
+        result["warning"] = "Git not initialized. Run 'init' tool to enable git tracking."
+    return result
 
 
 @mcp.tool
@@ -273,13 +277,11 @@ def push_flows(labels: str | None = None) -> dict:
         try:
             _api_request(update_flow, flow_data, env_id, flow_id)
             pushed.append(label)
-        except RuntimeError as e:
-            # Auth error - propagate immediately
-            raise
         except Exception as e:
             errors.append({"label": label, "error": str(e)})
 
     # Git commit if successful
+    git_committed = False
     if pushed and is_git_initialized():
         files = [f"{l}.json" for l in pushed]
         subprocess.run(["git", "add"] + files, check=True, capture_output=True)
@@ -290,14 +292,19 @@ def push_flows(labels: str | None = None) -> dict:
                 check=True,
                 capture_output=True,
             )
+            git_committed = True
 
-    return {
+    result = {
         "status": "pushed",
         "pushed": pushed,
         "errors": errors,
         "skipped": skipped,
         "missing": missing,
+        "git_committed": git_committed,
     }
+    if pushed and not is_git_initialized():
+        result["warning"] = "Git not initialized. Run 'init' tool to enable git tracking."
+    return result
 
 
 def main():

@@ -87,20 +87,13 @@ PAFS includes an MCP (Model Context Protocol) server that allows LLM clients lik
 
 ### Setup with Claude Code
 
-1. First, authenticate with Power Automate in the directory where you'll manage flows:
-
-   ```bash
-   cd /path/to/your/flows
-   pafs auth
-   ```
-
-2. Add the MCP server to Claude Code:
+1. Add the MCP server to Claude Code:
 
    ```bash
    claude mcp add --transport stdio pafs -- pafs-mcp
    ```
 
-3. Verify the server is registered:
+2. Verify the server is registered:
 
    ```bash
    claude mcp list
@@ -119,13 +112,13 @@ PAFS includes an MCP (Model Context Protocol) server that allows LLM clients lik
 
 ## Troubleshooting
 
-### MCP authentication errors
+### MCP authentication
 
-The MCP server cannot open a browser for authentication. If you see "Authentication required" errors:
+When the MCP server needs to authenticate, it will open a browser window. Complete the login to capture the token. If the browser doesn't appear or authentication fails:
 
 1. Open a terminal in your flows directory
 2. Run `pafs auth`
 3. Complete the login in the browser
 4. Try your MCP request again
 
-Tokens are cached and will be reused until they expire.
+Tokens are cached in `.pafs/token.json` and reused until they expire.
