@@ -95,3 +95,37 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
     with urllib.request.urlopen(request) as response:
         data = json.loads(response.read().decode("utf-8"))
         return data.get("value", [])
+
+
+def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
+    """Get all visible solutions from Dataverse.
+
+    Args:
+        access_token: Bearer token for authentication
+        dataverse_url: The Dataverse instance URL (e.g., https://org.crm.dynamics.com)
+
+    Returns:
+        List of solution objects with solutionid, friendlyname, uniquename, version
+    """
+    # Ensure URL doesn't have trailing slash
+    dataverse_url = dataverse_url.rstrip("/")
+
+    # Query for visible solutions, ordered by creation date (newest first)
+    url = (
+        f"{dataverse_url}/api/data/v9.0/solutions"
+        f"?$expand=publisherid"
+        f"&$filter=(isvisible eq true)"
+        f"&$orderby=createdon desc"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "OData-MaxVersion": "4.0",
+        "OData-Version": "4.0",
+    }
+
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        return data.get("value", [])

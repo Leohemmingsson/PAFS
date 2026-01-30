@@ -9,7 +9,7 @@ from pathlib import Path
 
 from playwright.sync_api import Request, sync_playwright
 
-from .pa_api import get_environment, get_flow, get_solution_flows, update_flow
+from .pa_api import get_environment, get_flow, get_solution_flows, get_solutions, update_flow
 from .shared import (
     BROWSER_DATA_DIR,
     SETTINGS_DIR,
@@ -20,6 +20,7 @@ from .shared import (
     is_git_initialized,
     load_flows,
     load_token,
+    parse_environment_url,
     parse_flow_url,
     parse_solution_url,
     sanitize_label,
@@ -145,6 +146,48 @@ def api_request_with_auth(func, flow_url: str, *args, **kwargs):
     # Get new token and retry
     token = get_token(flow_url)
     return func(token, *args, **kwargs)
+
+
+def select_from_menu(options: list[str], title: str) -> int | None:
+    """Show interactive menu for selection. Returns index or None if cancelled.
+
+    Uses simple-term-menu for interactive selection with built-in search (press /).
+    Falls back to numbered list with input() if the terminal doesn't support it.
+    """
+    try:
+        from simple_term_menu import TerminalMenu
+
+        menu = TerminalMenu(
+            options,
+            title=title,
+            search_key="/",
+            show_search_hint=True,
+        )
+        return menu.show()
+    except Exception:
+        # Fallback for non-interactive terminals or import issues
+        print(title)
+        for i, option in enumerate(options, 1):
+            print(f"  {i}. {option}")
+        print("  0. Cancel")
+        print()
+
+        while True:
+            try:
+                choice = input("Enter number: ").strip()
+                if not choice:
+                    continue
+                num = int(choice)
+                if num == 0:
+                    return None
+                if 1 <= num <= len(options):
+                    return num - 1
+                print(f"Please enter a number between 0 and {len(options)}")
+            except ValueError:
+                print("Please enter a valid number")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return None
 
 
 def git_commit_files(files: list[str], message: str) -> None:
@@ -275,6 +318,92 @@ def cmd_add(url: str, label: str | None = None) -> None:
         if _add_single_flow(flows, env_id, flow_id, label, solution_id):
             added_labels.append(label)
             print(f"Added flow '{label}'")
+
+    elif url_type == "environment":
+        # Environment URL without solution ID - let user select a solution
+        try:
+            env_id = parse_environment_url(url)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+
+        # Get environment info to find Dataverse URL
+        print("Fetching environment info...")
+        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
+        env_data = api_request_with_auth(get_environment, auth_url, env_id)
+
+        dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
+        if not dataverse_url:
+            print("Error: Could not find Dataverse URL for this environment")
+            print("This environment may not have Dataverse enabled")
+            return
+
+        # Fetch solutions list
+        print("Fetching solutions...")
+        solutions = api_request_with_auth(get_solutions, auth_url, dataverse_url)
+
+        if not solutions:
+            print("No solutions found in this environment")
+            return
+
+        # Build menu options
+        menu_options = []
+        for sol in solutions:
+            name = sol.get("friendlyname", sol.get("uniquename", "Unknown"))
+            version = sol.get("version", "")
+            if version:
+                menu_options.append(f"{name} (v{version})")
+            else:
+                menu_options.append(name)
+
+        print(f"Found {len(solutions)} solution(s)")
+        print()
+
+        # Show interactive menu
+        selected_index = select_from_menu(
+            menu_options,
+            "Select a solution (/ to search, Enter to select, q to cancel):",
+        )
+
+        if selected_index is None:
+            print("Cancelled")
+            return
+
+        solution_id = solutions[selected_index].get("solutionid")
+        if not solution_id:
+            print("Error: Selected solution has no ID")
+            return
+
+        selected_name = solutions[selected_index].get("friendlyname", "Unknown")
+        print(f"\nSelected: {selected_name}")
+
+        # Now fetch flows from the selected solution (reuse existing solution logic)
+        print("Fetching flows from solution...")
+        solution_flows = api_request_with_auth(
+            get_solution_flows, auth_url, dataverse_url, solution_id
+        )
+
+        if not solution_flows:
+            print("No flows found in solution")
+            return
+
+        print(f"Found {len(solution_flows)} flow(s) in solution")
+
+        existing_labels = set(flows.keys())
+        for flow_info in solution_flows:
+            display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
+            flow_id = flow_info.get("msdyn_objectid")
+
+            if not flow_id:
+                continue
+
+            flow_label = sanitize_label(display_name)
+            flow_label = _get_unique_label(flow_label, existing_labels)
+
+            if _add_single_flow(flows, env_id, flow_id, flow_label, solution_id):
+                added_labels.append(flow_label)
+                existing_labels.add(flow_label)
+                print(f"Added flow '{flow_label}'")
 
     elif url_type == "solution":
         try:

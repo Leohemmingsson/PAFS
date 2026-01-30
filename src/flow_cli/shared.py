@@ -186,18 +186,39 @@ def parse_solution_url(url: str) -> tuple[str, str]:
 
 
 def detect_url_type(url: str) -> str:
-    """Detect if a Power Automate URL points to a flow or solution.
+    """Detect if a Power Automate URL points to a flow, solution, or environment.
 
     Returns:
         'flow' if the URL contains /flows/
-        'solution' if the URL contains /solutions but not /flows/
+        'solution' if the URL contains /solutions/<solution_id>
+        'environment' if the URL ends with /solutions (no solution ID)
     """
     if "/flows/" in url:
         return "flow"
     elif "/solutions" in url:
+        # Check if URL ends with /solutions (with optional trailing slash)
+        if re.match(r"https://make\.powerautomate\.com/environments/[^/]+/solutions/?$", url):
+            return "environment"
         return "solution"
     else:
         raise ValueError(f"Cannot detect URL type (expected flow or solution URL): {url}")
+
+
+def parse_environment_url(url: str) -> str:
+    """Parse a Power Automate environment URL to extract environment_id.
+
+    Supported URL formats:
+    - https://make.powerautomate.com/environments/<env_id>/solutions
+    - https://make.powerautomate.com/environments/<env_id>/solutions/
+
+    Returns:
+        environment_id
+    """
+    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/solutions/?$"
+    match = re.match(pattern, url)
+    if not match:
+        raise ValueError(f"Invalid Power Automate environment URL format: {url}")
+    return match.group(1)
 
 
 def sanitize_label(display_name: str) -> str:
