@@ -147,9 +147,11 @@ def save_flows(flows: dict) -> None:
 def parse_flow_url(url: str) -> tuple[str, str]:
     """Parse a Power Automate URL to extract environment_id and flow_id.
 
-    URL format: https://make.powerautomate.com/environments/<env_id>/flows/<flow_id>/details
+    Supported URL formats:
+    - https://make.powerautomate.com/environments/<env_id>/flows/<flow_id>/details
+    - https://make.powerautomate.com/environments/<env_id>/solutions/<solution_id>/flows/<flow_id>/details
     """
-    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/flows/([^/]+)"
+    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/(?:solutions/[^/]+/)?flows/([^/]+)"
     match = re.match(pattern, url)
     if not match:
         raise ValueError(f"Invalid Power Automate URL format: {url}")
