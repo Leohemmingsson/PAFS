@@ -178,6 +178,9 @@ def parse_solution_url(url: str) -> tuple[str, str]:
     pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/solutions/([^/]+)"
     match = re.match(pattern, url)
     if not match:
+        # Check if URL is missing solution ID
+        if re.match(r"https://make\.powerautomate\.com/environments/[^/]+/solutions/?$", url):
+            raise ValueError("URL is missing solution ID. Open a specific solution and copy its URL")
         raise ValueError(f"Invalid Power Automate solution URL format: {url}")
     return match.group(1), match.group(2)
 
@@ -187,11 +190,11 @@ def detect_url_type(url: str) -> str:
 
     Returns:
         'flow' if the URL contains /flows/
-        'solution' if the URL contains /solutions/ but not /flows/
+        'solution' if the URL contains /solutions but not /flows/
     """
     if "/flows/" in url:
         return "flow"
-    elif "/solutions/" in url:
+    elif "/solutions" in url:
         return "solution"
     else:
         raise ValueError(f"Cannot detect URL type (expected flow or solution URL): {url}")
