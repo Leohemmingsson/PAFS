@@ -247,12 +247,21 @@ def _add_single_flow(
 
 def cmd_add(url: str, label: str | None = None) -> None:
     """Add a flow or all flows from a solution to the registry."""
-    url_type = detect_url_type(url)
+    try:
+        url_type = detect_url_type(url)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
     flows = load_flows()
     added_labels = []
 
     if url_type == "flow":
-        env_id, flow_id, solution_id = parse_flow_url(url)
+        try:
+            env_id, flow_id, solution_id = parse_flow_url(url)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
 
         # Get display name from API if no label provided
         if label is None:
@@ -268,7 +277,11 @@ def cmd_add(url: str, label: str | None = None) -> None:
             print(f"Added flow '{label}'")
 
     elif url_type == "solution":
-        env_id, solution_id = parse_solution_url(url)
+        try:
+            env_id, solution_id = parse_solution_url(url)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
 
         # Get environment info to find Dataverse URL
         print("Fetching environment info...")
