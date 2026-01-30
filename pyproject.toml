@@ -1,6 +1,6 @@
 [project]
 name = "pafs"
-version = "0.1.17"
+version = "0.1.18"
 description = "CLI tool for managing Power Automate flows"
 readme = "README.md"
 requires-python = ">=3.10"

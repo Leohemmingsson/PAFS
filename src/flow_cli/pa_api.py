@@ -73,13 +73,11 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
     # Ensure URL doesn't have trailing slash
     dataverse_url = dataverse_url.rstrip("/")
 
-    # Query for solution components that are cloud flows
-    # msdyn_componenttype 29 = Workflow, msdyn_workflowcategory 5 = Modern Flow (cloud flow)
-    # Note: These fields are strings in Dataverse, so values must be quoted
+    # Query for solution components that are workflows (includes cloud flows)
+    # Filter by componentlogicalname which is the entity type
     filter_query = (
         f"msdyn_solutionid eq '{solution_id}' "
-        f"and msdyn_componenttype eq '29' "
-        f"and msdyn_workflowcategory eq '5'"
+        f"and msdyn_componentlogicalname eq 'workflow'"
     )
     encoded_filter = urllib.parse.quote(filter_query)
 
