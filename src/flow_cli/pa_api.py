@@ -111,11 +111,13 @@ def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
     dataverse_url = dataverse_url.rstrip("/")
 
     # Query for visible solutions, ordered by creation date (newest first)
+    filter_query = "(isvisible eq true)"
+    orderby_query = "createdon desc"
     url = (
         f"{dataverse_url}/api/data/v9.0/solutions"
         f"?$expand=publisherid"
-        f"&$filter=(isvisible eq true)"
-        f"&$orderby=createdon desc"
+        f"&$filter={urllib.parse.quote(filter_query)}"
+        f"&$orderby={urllib.parse.quote(orderby_query)}"
     )
 
     headers = {
