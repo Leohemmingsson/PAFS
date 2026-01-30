@@ -93,9 +93,13 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
     }
 
     request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request) as response:
-        data = json.loads(response.read().decode("utf-8"))
-        return data.get("value", [])
+    try:
+        with urllib.request.urlopen(request) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return data.get("value", [])
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise RuntimeError(f"Dataverse API error {e.code}: {error_body}") from e
 
 
 def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
