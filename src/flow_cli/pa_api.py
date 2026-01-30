@@ -2,6 +2,7 @@
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE_URL = "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple"
@@ -40,3 +41,57 @@ def update_flow(
     """PATCH - Update an existing flow."""
     endpoint = f"/environments/{environment_id}/flows/{flow_id}"
     return _make_request(access_token, "PATCH", endpoint, flow_definition)
+
+
+def get_environment(access_token: str, environment_id: str) -> dict:
+    """GET - Fetch environment info including Dataverse URL.
+
+    Returns environment data with properties.linkedEnvironmentMetadata.instanceUrl
+    containing the Dataverse URL.
+    """
+    url = f"{BASE_URL}/environments/{environment_id}?api-version=2020-06-01"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) -> list[dict]:
+    """Get all flows in a solution via Dataverse API.
+
+    Args:
+        access_token: Bearer token for authentication
+        dataverse_url: The Dataverse instance URL (e.g., https://org.crm.dynamics.com)
+        solution_id: The solution GUID
+
+    Returns:
+        List of flow objects with msdyn_displayname and msdyn_objectid
+    """
+    # Ensure URL doesn't have trailing slash
+    dataverse_url = dataverse_url.rstrip("/")
+
+    # Query for solution components that are cloud flows
+    # msdyn_componenttype 29 = Workflow, msdyn_workflowcategory 5 = Modern Flow (cloud flow)
+    filter_query = (
+        f"msdyn_solutionid eq {solution_id} "
+        f"and msdyn_componenttype eq 29 "
+        f"and msdyn_workflowcategory eq 5"
+    )
+    encoded_filter = urllib.parse.quote(filter_query)
+
+    url = f"{dataverse_url}/api/data/v9.0/msdyn_solutioncomponentsummaries?$filter={encoded_filter}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "OData-MaxVersion": "4.0",
+        "OData-Version": "4.0",
+    }
+
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        return data.get("value", [])

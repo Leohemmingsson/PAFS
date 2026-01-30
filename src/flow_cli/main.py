@@ -9,17 +9,20 @@ from pathlib import Path
 
 from playwright.sync_api import Request, sync_playwright
 
-from .pa_api import get_flow, update_flow
+from .pa_api import get_environment, get_flow, get_solution_flows, update_flow
 from .shared import (
     BROWSER_DATA_DIR,
     SETTINGS_DIR,
     _ensure_gitignore_has_pafs,
     build_flow_url,
     clear_token,
+    detect_url_type,
     is_git_initialized,
     load_flows,
     load_token,
     parse_flow_url,
+    parse_solution_url,
+    sanitize_label,
     save_flows,
     save_token,
 )
@@ -204,20 +207,116 @@ def cmd_init() -> None:
         print("No files to commit")
 
 
-def cmd_add(label: str, url: str) -> None:
-    """Add a flow to the registry."""
-    environment_id, flow_id = parse_flow_url(url)
+def _get_unique_label(base_label: str, existing_labels: set[str]) -> str:
+    """Generate a unique label by appending a number if needed."""
+    if base_label not in existing_labels:
+        return base_label
+    counter = 2
+    while f"{base_label}-{counter}" in existing_labels:
+        counter += 1
+    return f"{base_label}-{counter}"
 
-    flows = load_flows()
-    flows[label] = {
-        "environment_id": environment_id,
+
+def _add_single_flow(
+    flows: dict,
+    env_id: str,
+    flow_id: str,
+    label: str,
+    solution_id: str | None = None,
+) -> bool:
+    """Add a single flow to the registry. Returns True if added, False if skipped."""
+    # Check for duplicate flow_id
+    for existing_label, info in flows.items():
+        if info["flow_id"] == flow_id:
+            if existing_label == label:
+                print(f"Flow '{label}' already exists, skipping")
+            else:
+                print(f"Warning: Flow ID {flow_id} already exists as '{existing_label}'")
+            return False
+
+    flow_entry = {
+        "environment_id": env_id,
         "flow_id": flow_id,
     }
-    save_flows(flows)
+    if solution_id:
+        flow_entry["solution_id"] = solution_id
 
-    print(f"Added flow '{label}':")
-    print(f"  Environment: {environment_id}")
-    print(f"  Flow ID: {flow_id}")
+    flows[label] = flow_entry
+    return True
+
+
+def cmd_add(url: str, label: str | None = None) -> None:
+    """Add a flow or all flows from a solution to the registry."""
+    url_type = detect_url_type(url)
+    flows = load_flows()
+    added_labels = []
+
+    if url_type == "flow":
+        env_id, flow_id, solution_id = parse_flow_url(url)
+
+        # Get display name from API if no label provided
+        if label is None:
+            flow_url = build_flow_url(env_id, flow_id)
+            print("Fetching flow info...")
+            flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
+            display_name = flow_data.get("properties", {}).get("displayName", "unnamed-flow")
+            label = sanitize_label(display_name)
+            label = _get_unique_label(label, set(flows.keys()))
+
+        if _add_single_flow(flows, env_id, flow_id, label, solution_id):
+            added_labels.append(label)
+            print(f"Added flow '{label}'")
+
+    elif url_type == "solution":
+        env_id, solution_id = parse_solution_url(url)
+
+        # Get environment info to find Dataverse URL
+        print("Fetching environment info...")
+        # Use a generic URL for auth since we don't have a specific flow
+        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
+        env_data = api_request_with_auth(get_environment, auth_url, env_id)
+
+        dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
+        if not dataverse_url:
+            print("Error: Could not find Dataverse URL for this environment")
+            print("This environment may not have Dataverse enabled")
+            return
+
+        # Get all flows in the solution
+        print(f"Fetching flows from solution...")
+        solution_flows = api_request_with_auth(
+            get_solution_flows, auth_url, dataverse_url, solution_id
+        )
+
+        if not solution_flows:
+            print("No flows found in solution")
+            return
+
+        print(f"Found {len(solution_flows)} flow(s) in solution")
+
+        existing_labels = set(flows.keys())
+        for flow_info in solution_flows:
+            display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
+            flow_id = flow_info.get("msdyn_objectid")
+
+            if not flow_id:
+                continue
+
+            flow_label = sanitize_label(display_name)
+            flow_label = _get_unique_label(flow_label, existing_labels)
+
+            if _add_single_flow(flows, env_id, flow_id, flow_label, solution_id):
+                added_labels.append(flow_label)
+                existing_labels.add(flow_label)
+                print(f"Added flow '{flow_label}'")
+
+    if added_labels:
+        save_flows(flows)
+        # Sync newly added flows
+        print(f"\nSyncing {len(added_labels)} flow(s)...")
+        cmd_sync(added_labels)
+    else:
+        print("No flows were added")
 
 
 def cmd_del(label: str) -> None:
@@ -244,11 +343,70 @@ def cmd_list() -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Run 'pafs add <label> <url>' to add one")
+        print("No flows registered. Run 'pafs add <url>' to add one")
         return
 
     for label in flows:
         print(label)
+
+
+def _discover_solution_flows(flows: dict) -> list[str]:
+    """Discover new flows in tracked solutions. Returns list of newly added labels."""
+    # Collect unique (env_id, solution_id) pairs
+    solutions: dict[tuple[str, str], str] = {}  # (env_id, solution_id) -> solution_id
+    for flow_info in flows.values():
+        solution_id = flow_info.get("solution_id")
+        if solution_id:
+            env_id = flow_info["environment_id"]
+            solutions[(env_id, solution_id)] = solution_id
+
+    if not solutions:
+        return []
+
+    # Get existing flow_ids for quick lookup
+    existing_flow_ids = {info["flow_id"] for info in flows.values()}
+    existing_labels = set(flows.keys())
+    added_labels = []
+
+    for (env_id, solution_id) in solutions:
+        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
+
+        try:
+            # Get Dataverse URL
+            env_data = api_request_with_auth(get_environment, auth_url, env_id)
+            dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
+
+            if not dataverse_url:
+                continue
+
+            # Get flows in solution
+            solution_flows = api_request_with_auth(
+                get_solution_flows, auth_url, dataverse_url, solution_id
+            )
+
+            for flow_info in solution_flows:
+                flow_id = flow_info.get("msdyn_objectid")
+                if not flow_id or flow_id in existing_flow_ids:
+                    continue
+
+                display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
+                label = sanitize_label(display_name)
+                label = _get_unique_label(label, existing_labels)
+
+                flows[label] = {
+                    "environment_id": env_id,
+                    "flow_id": flow_id,
+                    "solution_id": solution_id,
+                }
+                existing_flow_ids.add(flow_id)
+                existing_labels.add(label)
+                added_labels.append(label)
+                print(f"Discovered new flow: '{label}'")
+
+        except Exception as e:
+            print(f"Warning: Could not check solution {solution_id}: {e}")
+
+    return added_labels
 
 
 def cmd_sync(labels: list[str] | None) -> None:
@@ -256,8 +414,15 @@ def cmd_sync(labels: list[str] | None) -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Run 'pafs add <label> <url>' to add one")
+        print("No flows registered. Run 'pafs add <url>' to add one")
         return
+
+    # Auto-discover new flows in tracked solutions when syncing all
+    if labels is None:
+        discovered = _discover_solution_flows(flows)
+        if discovered:
+            save_flows(flows)
+            print(f"Discovered {len(discovered)} new flow(s)")
 
     # Determine which flows to sync
     if labels:
@@ -296,7 +461,7 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
     flows = load_flows()
 
     if not flows:
-        print("No flows registered. Run 'pafs add <label> <url>' to add one")
+        print("No flows registered. Run 'pafs add <url>' to add one")
         return
 
     # Determine which flows to push
@@ -424,9 +589,12 @@ def main() -> None:
     subparsers.add_parser("auth", help="Authenticate with Power Automate")
 
     # add
-    add_parser = subparsers.add_parser("add", help="Add a flow to the registry")
-    add_parser.add_argument("label", help="Label for the flow")
-    add_parser.add_argument("url", help="Power Automate flow URL")
+    add_parser = subparsers.add_parser("add", help="Add a flow or solution to the registry")
+    add_parser.add_argument("url", help="Power Automate flow or solution URL")
+    add_parser.add_argument(
+        "-l", "--label",
+        help="Custom label for the flow (auto-generated from flow name if not provided)",
+    )
 
     # del
     del_parser = subparsers.add_parser("del", help="Remove a flow from the registry")
@@ -470,7 +638,7 @@ def main() -> None:
     elif args.command == "auth":
         cmd_auth()
     elif args.command == "add":
-        cmd_add(args.label, args.url)
+        cmd_add(args.url, args.label)
     elif args.command == "del":
         cmd_del(args.label)
     elif args.command == "list":

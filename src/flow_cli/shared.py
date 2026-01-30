@@ -144,18 +144,74 @@ def save_flows(flows: dict) -> None:
 
 
 # URL utilities
-def parse_flow_url(url: str) -> tuple[str, str]:
-    """Parse a Power Automate URL to extract environment_id and flow_id.
+def parse_flow_url(url: str) -> tuple[str, str, str | None]:
+    """Parse a Power Automate URL to extract environment_id, flow_id, and optional solution_id.
 
     Supported URL formats:
     - https://make.powerautomate.com/environments/<env_id>/flows/<flow_id>/details
     - https://make.powerautomate.com/environments/<env_id>/solutions/<solution_id>/flows/<flow_id>/details
+
+    Returns:
+        Tuple of (environment_id, flow_id, solution_id or None)
     """
-    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/(?:solutions/[^/]+/)?flows/([^/]+)"
+    # Pattern with optional solution capture
+    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/(?:solutions/([^/]+)/)?flows/([^/]+)"
     match = re.match(pattern, url)
     if not match:
-        raise ValueError(f"Invalid Power Automate URL format: {url}")
+        raise ValueError(f"Invalid Power Automate flow URL format: {url}")
+    env_id = match.group(1)
+    solution_id = match.group(2)  # None if not present
+    flow_id = match.group(3)
+    return env_id, flow_id, solution_id
+
+
+def parse_solution_url(url: str) -> tuple[str, str]:
+    """Parse a Power Automate solution URL to extract environment_id and solution_id.
+
+    Supported URL formats:
+    - https://make.powerautomate.com/environments/<env_id>/solutions/<solution_id>
+    - https://make.powerautomate.com/environments/<env_id>/solutions/<solution_id>/...
+
+    Returns:
+        Tuple of (environment_id, solution_id)
+    """
+    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/solutions/([^/]+)"
+    match = re.match(pattern, url)
+    if not match:
+        raise ValueError(f"Invalid Power Automate solution URL format: {url}")
     return match.group(1), match.group(2)
+
+
+def detect_url_type(url: str) -> str:
+    """Detect if a Power Automate URL points to a flow or solution.
+
+    Returns:
+        'flow' if the URL contains /flows/
+        'solution' if the URL contains /solutions/ but not /flows/
+    """
+    if "/flows/" in url:
+        return "flow"
+    elif "/solutions/" in url:
+        return "solution"
+    else:
+        raise ValueError(f"Cannot detect URL type (expected flow or solution URL): {url}")
+
+
+def sanitize_label(display_name: str) -> str:
+    """Convert a flow display name to a valid file name label.
+
+    - Converts to lowercase
+    - Replaces spaces and special characters with hyphens
+    - Removes consecutive hyphens
+    - Strips leading/trailing hyphens
+    """
+    # Convert to lowercase and replace spaces/special chars with hyphens
+    label = re.sub(r"[^a-zA-Z0-9]+", "-", display_name.lower())
+    # Remove consecutive hyphens
+    label = re.sub(r"-+", "-", label)
+    # Strip leading/trailing hyphens
+    label = label.strip("-")
+    return label or "unnamed-flow"
 
 
 def build_flow_url(environment_id: str, flow_id: str) -> str:
