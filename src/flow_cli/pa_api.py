@@ -75,8 +75,9 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
 
     # Query for solution components that are cloud flows
     # msdyn_componenttype 29 = Workflow, msdyn_workflowcategory 5 = Modern Flow (cloud flow)
+    # Note: GUID values must be quoted in OData filters
     filter_query = (
-        f"msdyn_solutionid eq {solution_id} "
+        f"msdyn_solutionid eq '{solution_id}' "
         f"and msdyn_componenttype eq 29 "
         f"and msdyn_workflowcategory eq 5"
     )
