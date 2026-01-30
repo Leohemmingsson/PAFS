@@ -11,6 +11,7 @@ from playwright.sync_api import Request, sync_playwright
 # Constants
 SETTINGS_DIR = Path(".pafs")
 FLOWS_FILE = SETTINGS_DIR / "flows.json"
+SOLUTIONS_FILE = SETTINGS_DIR / "solutions.json"
 TOKEN_FILE = SETTINGS_DIR / "token.json"
 BROWSER_DATA_DIR = SETTINGS_DIR / "browser-data"
 
@@ -174,6 +175,33 @@ def save_flows(flows: dict) -> None:
     """Save the flows registry to .pafs/flows.json."""
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     FLOWS_FILE.write_text(json.dumps(flows, indent=2) + "\n")
+
+
+# Solutions registry functions
+def load_solutions() -> dict:
+    """Load solutions registry from .pafs/solutions.json.
+
+    Returns a dict mapping solution_id to solution info:
+    {
+        "solution-uuid": {
+            "environment_id": "env-uuid",
+            "name": "My Solution",
+            "ignored": ["flow-uuid-1", "flow-uuid-2"]
+        }
+    }
+    """
+    if not SOLUTIONS_FILE.exists():
+        return {}
+    try:
+        return json.loads(SOLUTIONS_FILE.read_text())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid JSON in {SOLUTIONS_FILE}: {e}") from e
+
+
+def save_solutions(solutions: dict) -> None:
+    """Save solutions registry to .pafs/solutions.json."""
+    SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    SOLUTIONS_FILE.write_text(json.dumps(solutions, indent=2) + "\n")
 
 
 # URL utilities

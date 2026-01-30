@@ -21,11 +21,13 @@ from .shared import (
     load_dataverse_token,
     load_flows,
     load_flow_token,
+    load_solutions,
     parse_environment_url,
     parse_flow_url,
     parse_solution_url,
     sanitize_label,
     save_flows,
+    save_solutions,
     save_tokens,
 )
 
@@ -383,9 +385,20 @@ def cmd_add(url: str, label: str | None = None) -> None:
             label = sanitize_label(display_name)
             label = _get_unique_label(label, set(flows.keys()))
 
-        if _add_single_flow(flows, env_id, flow_id, label, solution_id):
+        # Don't pass solution_id for single flow adds - only track the specific flow
+        if _add_single_flow(flows, env_id, flow_id, label):
             added_labels.append(label)
             print(f"Added flow '{label}'")
+
+            # Remove from any solution's ignored list
+            solutions = load_solutions()
+            modified = False
+            for sol_info in solutions.values():
+                if flow_id in sol_info.get("ignored", []):
+                    sol_info["ignored"].remove(flow_id)
+                    modified = True
+            if modified:
+                save_solutions(solutions)
 
     elif url_type == "environment":
         # Environment URL without solution ID - let user select a solution
@@ -460,6 +473,16 @@ def cmd_add(url: str, label: str | None = None) -> None:
 
         print(f"Found {len(solution_flows)} flow(s) in solution")
 
+        # Save solution to solutions.json for auto-discovery
+        solutions_registry = load_solutions()
+        if solution_id not in solutions_registry:
+            solutions_registry[solution_id] = {
+                "environment_id": env_id,
+                "name": selected_name,
+                "ignored": []
+            }
+            save_solutions(solutions_registry)
+
         existing_labels = set(flows.keys())
         for flow_info in solution_flows:
             display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
@@ -508,6 +531,16 @@ def cmd_add(url: str, label: str | None = None) -> None:
 
         print(f"Found {len(solution_flows)} flow(s) in solution")
 
+        # Save solution to solutions.json for auto-discovery
+        solutions_registry = load_solutions()
+        if solution_id not in solutions_registry:
+            solutions_registry[solution_id] = {
+                "environment_id": env_id,
+                "name": "Unknown",  # Solution name not available from URL
+                "ignored": []
+            }
+            save_solutions(solutions_registry)
+
         existing_labels = set(flows.keys())
         for flow_info in solution_flows:
             display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
@@ -541,6 +574,18 @@ def cmd_del(label: str) -> None:
         print(f"Flow '{label}' not found")
         return
 
+    flow_info = flows[label]
+    solution_id = flow_info.get("solution_id")
+
+    # Add to solution's ignored list if flow is from a tracked solution
+    if solution_id:
+        solutions = load_solutions()
+        if solution_id in solutions:
+            ignored = solutions[solution_id].setdefault("ignored", [])
+            if flow_info["flow_id"] not in ignored:
+                ignored.append(flow_info["flow_id"])
+            save_solutions(solutions)
+
     del flows[label]
     save_flows(flows)
     print(f"Removed '{label}'")
@@ -566,15 +611,9 @@ def cmd_list() -> None:
 
 def _discover_solution_flows(flows: dict) -> list[str]:
     """Discover new flows in tracked solutions. Returns list of newly added labels."""
-    # Collect unique (env_id, solution_id) pairs
-    solutions: dict[tuple[str, str], str] = {}  # (env_id, solution_id) -> solution_id
-    for flow_info in flows.values():
-        solution_id = flow_info.get("solution_id")
-        if solution_id:
-            env_id = flow_info["environment_id"]
-            solutions[(env_id, solution_id)] = solution_id
-
-    if not solutions:
+    # Read from solutions.json instead of scanning flows
+    solutions_registry = load_solutions()
+    if not solutions_registry:
         return []
 
     # Get existing flow_ids for quick lookup
@@ -582,7 +621,10 @@ def _discover_solution_flows(flows: dict) -> list[str]:
     existing_labels = set(flows.keys())
     added_labels = []
 
-    for (env_id, solution_id) in solutions:
+    for solution_id, sol_info in solutions_registry.items():
+        env_id = sol_info["environment_id"]
+        ignored = set(sol_info.get("ignored", []))
+
         auth_url = f"https://make.powerautomate.com/environments/{env_id}"
 
         try:
@@ -601,7 +643,9 @@ def _discover_solution_flows(flows: dict) -> list[str]:
 
             for flow_info in solution_flows:
                 flow_id = flow_info.get("msdyn_objectid")
-                if not flow_id or flow_id in existing_flow_ids:
+
+                # Skip if already tracked, or if in ignored list
+                if not flow_id or flow_id in existing_flow_ids or flow_id in ignored:
                     continue
 
                 display_name = flow_info.get("msdyn_displayname", "unnamed-flow")

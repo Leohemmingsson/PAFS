@@ -15,9 +15,11 @@ from .shared import (
     clear_token,
     is_git_initialized,
     load_flows,
-    load_token,
+    load_flow_token,
+    load_solutions,
     parse_flow_url,
     save_flows,
+    save_solutions,
 )
 
 mcp = FastMCP(name="pafs")
@@ -25,10 +27,11 @@ mcp = FastMCP(name="pafs")
 
 def _get_token() -> str:
     """Get the saved token or capture a new one via browser."""
-    token = load_token()
+    token = load_flow_token()
     if token:
         return token
-    return capture_token_via_browser()
+    flow_token, _ = capture_token_via_browser()
+    return flow_token
 
 
 def _api_request(func, *args, **kwargs):
@@ -40,8 +43,8 @@ def _api_request(func, *args, **kwargs):
         if e.code == 401:
             # Token expired, try to get a new one via browser
             clear_token()
-            token = capture_token_via_browser()
-            return func(token, *args, **kwargs)
+            flow_token, _ = capture_token_via_browser()
+            return func(flow_token, *args, **kwargs)
         raise
 
 
@@ -149,6 +152,18 @@ def remove_flow(label: str) -> dict:
 
     if label not in flows:
         return {"status": "error", "message": f"Flow '{label}' not found"}
+
+    flow_info = flows[label]
+    solution_id = flow_info.get("solution_id")
+
+    # Add to solution's ignored list if flow is from a tracked solution
+    if solution_id:
+        solutions = load_solutions()
+        if solution_id in solutions:
+            ignored = solutions[solution_id].setdefault("ignored", [])
+            if flow_info["flow_id"] not in ignored:
+                ignored.append(flow_info["flow_id"])
+            save_solutions(solutions)
 
     del flows[label]
     save_flows(flows)
