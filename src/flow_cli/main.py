@@ -57,7 +57,11 @@ def _is_login_page(url: str) -> bool:
     return any(host in url for host in login_hosts)
 
 
-def get_tokens(auth_url: str, timeout_seconds: int = 300) -> tuple[str, str | None]:
+def get_tokens(
+    auth_url: str,
+    timeout_seconds: int = 300,
+    require_dataverse_token: bool = False,
+) -> tuple[str, str | None]:
     """Get Bearer tokens, using saved tokens or capturing new ones via browser.
 
     Captures tokens for both the Flow API and Dataverse API.
@@ -68,14 +72,15 @@ def get_tokens(auth_url: str, timeout_seconds: int = 300) -> tuple[str, str | No
     Args:
         auth_url: The Power Automate URL to navigate to for authentication.
         timeout_seconds: Maximum time to wait for authentication (default: 5 minutes).
+        require_dataverse_token: If True, wait until Dataverse token is also captured.
 
     Returns:
-        Tuple of (flow_token, dataverse_token). Dataverse token may be None.
+        Tuple of (flow_token, dataverse_token). Dataverse token may be None unless required.
     """
     # Try to use saved tokens first
     saved_flow_token = load_flow_token()
     saved_dataverse_token = load_dataverse_token()
-    if saved_flow_token:
+    if saved_flow_token and (not require_dataverse_token or saved_dataverse_token):
         return saved_flow_token, saved_dataverse_token
 
     # Ensure browser is installed before launching
@@ -114,14 +119,17 @@ def get_tokens(auth_url: str, timeout_seconds: int = 300) -> tuple[str, str | No
         print("Opening browser...")
         page.goto(auth_url, wait_until="commit")
 
-        # Poll until we capture the flow token or timeout
-        # Dataverse token is captured opportunistically
+        # Poll until we capture required tokens or timeout
         login_prompt_shown = False
         poll_interval_ms = 500
         max_polls = (timeout_seconds * 1000) // poll_interval_ms
 
         for _ in range(max_polls):
-            if captured_flow_token:
+            # Check if we have all required tokens
+            have_required = captured_flow_token and (
+                not require_dataverse_token or captured_dataverse_token
+            )
+            if have_required:
                 break
 
             try:
@@ -192,8 +200,10 @@ def api_request_with_auth(func, auth_url: str, *args, use_dataverse_token: bool 
     else:
         target_url = auth_url
 
-    # Get new tokens
-    flow_token, dataverse_token = get_tokens(target_url)
+    # Get new tokens (require Dataverse token if needed)
+    flow_token, dataverse_token = get_tokens(
+        target_url, require_dataverse_token=use_dataverse_token
+    )
 
     if use_dataverse_token:
         if not dataverse_token:
