@@ -16,21 +16,42 @@ BROWSER_DATA_DIR = SETTINGS_DIR / "browser-data"
 
 
 # Token functions
-def load_token() -> str | None:
-    """Load saved token from .pafs/token.json."""
+def load_flow_token() -> str | None:
+    """Load saved Flow API token from .pafs/token.json.
+
+    Supports both old format ({"token": "..."}) and new format
+    ({"flow_token": "...", "dataverse_token": "..."}) for backward compatibility.
+    """
     if not TOKEN_FILE.exists():
         return None
     try:
         data = json.loads(TOKEN_FILE.read_text())
-        return data.get("token")
+        # Try new format first, fall back to old format
+        return data.get("flow_token") or data.get("token")
     except (json.JSONDecodeError, KeyError):
         return None
 
 
-def save_token(token: str) -> None:
-    """Save token to .pafs/token.json."""
+def load_dataverse_token() -> str | None:
+    """Load saved Dataverse API token from .pafs/token.json."""
+    if not TOKEN_FILE.exists():
+        return None
+    try:
+        data = json.loads(TOKEN_FILE.read_text())
+        return data.get("dataverse_token")
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+def save_tokens(flow_token: str | None, dataverse_token: str | None) -> None:
+    """Save both Flow and Dataverse tokens to .pafs/token.json."""
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps({"token": token}, indent=2) + "\n")
+    token_data = {}
+    if flow_token:
+        token_data["flow_token"] = flow_token
+    if dataverse_token:
+        token_data["dataverse_token"] = dataverse_token
+    TOKEN_FILE.write_text(json.dumps(token_data, indent=2) + "\n")
 
 
 def clear_token() -> None:
@@ -68,29 +89,39 @@ def _is_login_page(url: str) -> bool:
 def capture_token_via_browser(
     url: str = "https://make.powerautomate.com/",
     timeout_seconds: int = 300,
-) -> str:
-    """Open a browser to capture a Bearer token from Power Automate.
+) -> tuple[str | None, str | None]:
+    """Open a browser to capture Bearer tokens from Power Automate.
+
+    Captures tokens for both the Flow API (api.flow.microsoft.com) and
+    Dataverse API (*.dynamics.com).
 
     Args:
         url: The URL to navigate to for authentication.
         timeout_seconds: Maximum time to wait for authentication.
 
     Returns:
-        The captured Bearer token.
+        Tuple of (flow_token, dataverse_token). Either may be None if not captured.
 
     Raises:
-        RuntimeError: If token capture fails or times out.
+        RuntimeError: If no tokens were captured before timeout.
     """
     _ensure_playwright_browsers()
 
-    captured_token: str | None = None
+    captured_flow_token: str | None = None
+    captured_dataverse_token: str | None = None
 
     def on_request(request: Request) -> None:
-        nonlocal captured_token
-        if "api.flow.microsoft.com" in request.url:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header.startswith("Bearer ") and captured_token is None:
-                captured_token = auth_header.removeprefix("Bearer ")
+        nonlocal captured_flow_token, captured_dataverse_token
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return
+
+        token = auth_header.removeprefix("Bearer ")
+
+        if "api.flow.microsoft.com" in request.url and captured_flow_token is None:
+            captured_flow_token = token
+        elif ".dynamics.com" in request.url and captured_dataverse_token is None:
+            captured_dataverse_token = token
 
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -110,7 +141,9 @@ def capture_token_via_browser(
         max_polls = (timeout_seconds * 1000) // poll_interval_ms
 
         for _ in range(max_polls):
-            if captured_token:
+            # Wait until we have the flow token (required)
+            # Dataverse token is optional since not all pages trigger Dataverse requests
+            if captured_flow_token:
                 break
             try:
                 page.wait_for_timeout(poll_interval_ms)
@@ -119,11 +152,11 @@ def capture_token_via_browser(
 
         context.close()
 
-    if not captured_token:
+    if not captured_flow_token:
         raise RuntimeError("Failed to capture authentication token")
 
-    save_token(captured_token)
-    return captured_token
+    save_tokens(captured_flow_token, captured_dataverse_token)
+    return captured_flow_token, captured_dataverse_token
 
 
 # Flow registry functions

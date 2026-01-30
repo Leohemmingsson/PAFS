@@ -18,14 +18,15 @@ from .shared import (
     clear_token,
     detect_url_type,
     is_git_initialized,
+    load_dataverse_token,
     load_flows,
-    load_token,
+    load_flow_token,
     parse_environment_url,
     parse_flow_url,
     parse_solution_url,
     sanitize_label,
     save_flows,
-    save_token,
+    save_tokens,
 )
 
 
@@ -56,33 +57,47 @@ def _is_login_page(url: str) -> bool:
     return any(host in url for host in login_hosts)
 
 
-def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
-    """Get Bearer token, using saved token or capturing a new one via browser.
+def get_tokens(auth_url: str, timeout_seconds: int = 300) -> tuple[str, str | None]:
+    """Get Bearer tokens, using saved tokens or capturing new ones via browser.
+
+    Captures tokens for both the Flow API and Dataverse API.
 
     If the user is redirected to a Microsoft login page, waits patiently for
-    them to complete authentication before capturing the token.
+    them to complete authentication before capturing the tokens.
 
     Args:
-        flow_url: The Power Automate URL to navigate to.
+        auth_url: The Power Automate URL to navigate to for authentication.
         timeout_seconds: Maximum time to wait for authentication (default: 5 minutes).
+
+    Returns:
+        Tuple of (flow_token, dataverse_token). Dataverse token may be None.
     """
-    # Try to use saved token first
-    saved_token = load_token()
-    if saved_token:
-        return saved_token
+    # Try to use saved tokens first
+    saved_flow_token = load_flow_token()
+    saved_dataverse_token = load_dataverse_token()
+    if saved_flow_token:
+        return saved_flow_token, saved_dataverse_token
 
     # Ensure browser is installed before launching
     ensure_playwright_browsers()
 
-    captured_token: str | None = None
+    captured_flow_token: str | None = None
+    captured_dataverse_token: str | None = None
 
     def on_request(request: Request) -> None:
-        nonlocal captured_token
-        if "api.flow.microsoft.com" in request.url:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header.startswith("Bearer ") and captured_token is None:
-                captured_token = auth_header.removeprefix("Bearer ")
-                print("Token captured")
+        nonlocal captured_flow_token, captured_dataverse_token
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return
+
+        token = auth_header.removeprefix("Bearer ")
+
+        if "api.flow.microsoft.com" in request.url and captured_flow_token is None:
+            captured_flow_token = token
+            print("Flow API token captured")
+        elif ".dynamics.com" in request.url and captured_dataverse_token is None:
+            captured_dataverse_token = token
+            print("Dataverse API token captured")
 
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,15 +112,16 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
         context.on("page", lambda new_page: new_page.on("request", on_request))
 
         print("Opening browser...")
-        page.goto(flow_url, wait_until="commit")
+        page.goto(auth_url, wait_until="commit")
 
-        # Poll until we capture a token or timeout
+        # Poll until we capture the flow token or timeout
+        # Dataverse token is captured opportunistically
         login_prompt_shown = False
         poll_interval_ms = 500
         max_polls = (timeout_seconds * 1000) // poll_interval_ms
 
         for _ in range(max_polls):
-            if captured_token:
+            if captured_flow_token:
                 break
 
             try:
@@ -121,19 +137,45 @@ def get_token(flow_url: str, timeout_seconds: int = 300) -> str:
 
         context.close()
 
-    if not captured_token:
+    if not captured_flow_token:
         raise RuntimeError("Failed to capture authentication token")
 
-    # Save the token for future use
-    save_token(captured_token)
-    print("Token saved")
-    return captured_token
+    # Save the tokens for future use
+    save_tokens(captured_flow_token, captured_dataverse_token)
+    print("Tokens saved")
+    return captured_flow_token, captured_dataverse_token
 
 
-def api_request_with_auth(func, flow_url: str, *args, **kwargs):
-    """Wrapper that handles 401 errors by refreshing the token."""
+def _build_solutions_url(auth_url: str) -> str:
+    """Build a solutions page URL from an auth URL to trigger Dataverse requests.
+
+    If auth_url contains an environment ID, navigates to its solutions page.
+    Otherwise, uses a generic Power Automate home page.
+    """
+    import re
+    match = re.search(r"/environments/([^/]+)", auth_url)
+    if match:
+        env_id = match.group(1)
+        return f"https://make.powerautomate.com/environments/{env_id}/solutions"
+    return auth_url
+
+
+def api_request_with_auth(func, auth_url: str, *args, use_dataverse_token: bool = False, **kwargs):
+    """Wrapper that handles 401 errors by refreshing the token.
+
+    Args:
+        func: The API function to call (first argument should be the token).
+        auth_url: URL to navigate to if token refresh is needed.
+        *args: Additional positional arguments for the API function.
+        use_dataverse_token: If True, use the Dataverse token instead of Flow token.
+        **kwargs: Additional keyword arguments for the API function.
+    """
     # Try with saved token first
-    saved_token = load_token()
+    if use_dataverse_token:
+        saved_token = load_dataverse_token()
+    else:
+        saved_token = load_flow_token()
+
     if saved_token:
         try:
             return func(saved_token, *args, **kwargs)
@@ -143,9 +185,25 @@ def api_request_with_auth(func, flow_url: str, *args, **kwargs):
             print("Token expired, refreshing...")
             clear_token()
 
-    # Get new token and retry
-    token = get_token(flow_url)
-    return func(token, *args, **kwargs)
+    # Determine which URL to use for authentication
+    # For Dataverse, navigate to solutions page to ensure Dataverse token is captured
+    if use_dataverse_token:
+        target_url = _build_solutions_url(auth_url)
+    else:
+        target_url = auth_url
+
+    # Get new tokens
+    flow_token, dataverse_token = get_tokens(target_url)
+
+    if use_dataverse_token:
+        if not dataverse_token:
+            raise RuntimeError(
+                "Failed to capture Dataverse token. "
+                "Make sure you have access to the environment's solutions."
+            )
+        return func(dataverse_token, *args, **kwargs)
+    else:
+        return func(flow_token, *args, **kwargs)
 
 
 def select_from_menu(options: list[str], title: str) -> int | None:
@@ -338,9 +396,11 @@ def cmd_add(url: str, label: str | None = None) -> None:
             print("This environment may not have Dataverse enabled")
             return
 
-        # Fetch solutions list
+        # Fetch solutions list (uses Dataverse API)
         print("Fetching solutions...")
-        solutions = api_request_with_auth(get_solutions, auth_url, dataverse_url)
+        solutions = api_request_with_auth(
+            get_solutions, auth_url, dataverse_url, use_dataverse_token=True
+        )
 
         if not solutions:
             print("No solutions found in this environment")
@@ -377,10 +437,11 @@ def cmd_add(url: str, label: str | None = None) -> None:
         selected_name = solutions[selected_index].get("friendlyname", "Unknown")
         print(f"\nSelected: {selected_name}")
 
-        # Now fetch flows from the selected solution (reuse existing solution logic)
+        # Now fetch flows from the selected solution (uses Dataverse API)
         print("Fetching flows from solution...")
         solution_flows = api_request_with_auth(
-            get_solution_flows, auth_url, dataverse_url, solution_id
+            get_solution_flows, auth_url, dataverse_url, solution_id,
+            use_dataverse_token=True
         )
 
         if not solution_flows:
@@ -424,10 +485,11 @@ def cmd_add(url: str, label: str | None = None) -> None:
             print("This environment may not have Dataverse enabled")
             return
 
-        # Get all flows in the solution
+        # Get all flows in the solution (uses Dataverse API)
         print(f"Fetching flows from solution...")
         solution_flows = api_request_with_auth(
-            get_solution_flows, auth_url, dataverse_url, solution_id
+            get_solution_flows, auth_url, dataverse_url, solution_id,
+            use_dataverse_token=True
         )
 
         if not solution_flows:
@@ -521,9 +583,10 @@ def _discover_solution_flows(flows: dict) -> list[str]:
             if not dataverse_url:
                 continue
 
-            # Get flows in solution
+            # Get flows in solution (uses Dataverse API)
             solution_flows = api_request_with_auth(
-                get_solution_flows, auth_url, dataverse_url, solution_id
+                get_solution_flows, auth_url, dataverse_url, solution_id,
+                use_dataverse_token=True
             )
 
             for flow_info in solution_flows:
@@ -647,10 +710,13 @@ def cmd_push(labels: list[str] | None, message: str) -> None:
 
 
 def cmd_auth() -> None:
-    """Authenticate with Power Automate by opening a browser to capture a token."""
-    # Clear any existing token to force re-authentication
+    """Authenticate with Power Automate by opening a browser to capture tokens.
+
+    Captures both the Flow API token and Dataverse API token.
+    """
+    # Clear any existing tokens to force re-authentication
     clear_token()
-    print("Cleared existing token")
+    print("Cleared existing tokens")
 
     # Use a generic Power Automate URL to trigger authentication
     auth_url = "https://make.powerautomate.com/"
@@ -658,15 +724,23 @@ def cmd_auth() -> None:
     # Ensure browser is installed before launching
     ensure_playwright_browsers()
 
-    captured_token: str | None = None
+    captured_flow_token: str | None = None
+    captured_dataverse_token: str | None = None
 
     def on_request(request: Request) -> None:
-        nonlocal captured_token
-        if "api.flow.microsoft.com" in request.url:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header.startswith("Bearer ") and captured_token is None:
-                captured_token = auth_header.removeprefix("Bearer ")
-                print("Token captured")
+        nonlocal captured_flow_token, captured_dataverse_token
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return
+
+        token = auth_header.removeprefix("Bearer ")
+
+        if "api.flow.microsoft.com" in request.url and captured_flow_token is None:
+            captured_flow_token = token
+            print("Flow API token captured")
+        elif ".dynamics.com" in request.url and captured_dataverse_token is None:
+            captured_dataverse_token = token
+            print("Dataverse API token captured")
 
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -683,14 +757,15 @@ def cmd_auth() -> None:
         print("Opening browser for authentication...")
         page.goto(auth_url, wait_until="commit")
 
-        # Poll until we capture a token or timeout
+        # Poll until we capture the flow token or timeout
+        # Dataverse token is captured opportunistically
         timeout_seconds = 300
         login_prompt_shown = False
         poll_interval_ms = 500
         max_polls = (timeout_seconds * 1000) // poll_interval_ms
 
         for _ in range(max_polls):
-            if captured_token:
+            if captured_flow_token:
                 break
 
             try:
@@ -705,11 +780,14 @@ def cmd_auth() -> None:
 
         context.close()
 
-    if not captured_token:
+    if not captured_flow_token:
         raise RuntimeError("Failed to capture authentication token")
 
-    save_token(captured_token)
-    print("Token saved successfully")
+    save_tokens(captured_flow_token, captured_dataverse_token)
+    if captured_dataverse_token:
+        print("Both tokens saved successfully")
+    else:
+        print("Flow token saved (Dataverse token will be captured when needed)")
 
 
 def main() -> None:
