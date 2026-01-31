@@ -7,13 +7,12 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from .auth import api_request_with_auth, get_tokens
+from .git import ensure_gitignore_has_pafs, is_git_initialized
 from .pa_api import get_flow, update_flow
 from .shared import (
-    _ensure_gitignore_has_pafs,
     build_flow_url,
-    capture_token_via_browser,
     clear_token,
-    is_git_initialized,
     load_flows,
     load_flow_token,
     load_solutions,
@@ -30,7 +29,7 @@ def _get_token() -> str:
     token = load_flow_token()
     if token:
         return token
-    flow_token, _ = capture_token_via_browser()
+    flow_token, _ = get_tokens("https://make.powerautomate.com/")
     return flow_token
 
 
@@ -43,7 +42,7 @@ def _api_request(func, *args, **kwargs):
         if e.code == 401:
             # Token expired, try to get a new one via browser
             clear_token()
-            flow_token, _ = capture_token_via_browser()
+            flow_token, _ = get_tokens("https://make.powerautomate.com/")
             return func(flow_token, *args, **kwargs)
         raise
 
@@ -66,7 +65,7 @@ def init() -> dict:
         subprocess.run(["git", "init"], check=True, capture_output=True)
         messages.append("Initialized git repository")
 
-    gitignore_modified = _ensure_gitignore_has_pafs()
+    gitignore_modified = ensure_gitignore_has_pafs()
     if gitignore_modified:
         messages.append("Added .pafs to .gitignore")
 
@@ -122,23 +121,29 @@ def add_flow(label: str, url: str) -> dict:
         url: The Power Automate URL for the flow
     """
     try:
-        environment_id, flow_id = parse_flow_url(url)
+        environment_id, flow_id, solution_id = parse_flow_url(url)
     except ValueError as e:
         return {"status": "error", "message": str(e)}
 
     flows = load_flows()
-    flows[label] = {
+    flow_entry = {
         "environment_id": environment_id,
         "flow_id": flow_id,
     }
+    if solution_id:
+        flow_entry["solution_id"] = solution_id
+    flows[label] = flow_entry
     save_flows(flows)
 
-    return {
+    result = {
         "status": "added",
         "label": label,
         "environment_id": environment_id,
         "flow_id": flow_id,
     }
+    if solution_id:
+        result["solution_id"] = solution_id
+    return result
 
 
 @mcp.tool

@@ -2,11 +2,7 @@
 
 import json
 import re
-import subprocess
-import sys
 from pathlib import Path
-
-from playwright.sync_api import Request, sync_playwright
 
 # Constants
 SETTINGS_DIR = Path(".pafs")
@@ -59,105 +55,6 @@ def clear_token() -> None:
     """Clear the saved token."""
     if TOKEN_FILE.exists():
         TOKEN_FILE.unlink()
-
-
-def _ensure_playwright_browsers() -> None:
-    """Install Playwright Chromium browser if not already installed."""
-    result = subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
-        capture_output=True,
-        text=True,
-    )
-    if "chromium" in result.stdout.lower() or result.returncode != 0:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            capture_output=True,
-        )
-
-
-def _is_login_page(url: str) -> bool:
-    """Check if the URL is a Microsoft login page."""
-    login_hosts = [
-        "login.microsoftonline.com",
-        "login.microsoft.com",
-        "login.live.com",
-        "account.microsoft.com",
-    ]
-    return any(host in url for host in login_hosts)
-
-
-def capture_token_via_browser(
-    url: str = "https://make.powerautomate.com/",
-    timeout_seconds: int = 300,
-) -> tuple[str | None, str | None]:
-    """Open a browser to capture Bearer tokens from Power Automate.
-
-    Captures tokens for both the Flow API (api.flow.microsoft.com) and
-    Dataverse API (*.dynamics.com).
-
-    Args:
-        url: The URL to navigate to for authentication.
-        timeout_seconds: Maximum time to wait for authentication.
-
-    Returns:
-        Tuple of (flow_token, dataverse_token). Either may be None if not captured.
-
-    Raises:
-        RuntimeError: If no tokens were captured before timeout.
-    """
-    _ensure_playwright_browsers()
-
-    captured_flow_token: str | None = None
-    captured_dataverse_token: str | None = None
-
-    def on_request(request: Request) -> None:
-        nonlocal captured_flow_token, captured_dataverse_token
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return
-
-        token = auth_header.removeprefix("Bearer ")
-
-        if "api.flow.microsoft.com" in request.url and captured_flow_token is None:
-            captured_flow_token = token
-        elif ".dynamics.com" in request.url and captured_dataverse_token is None:
-            captured_dataverse_token = token
-
-    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_DATA_DIR),
-            headless=False,
-        )
-
-        page = context.pages[0]
-        page.on("request", on_request)
-        context.on("page", lambda new_page: new_page.on("request", on_request))
-
-        page.goto(url, wait_until="commit")
-
-        poll_interval_ms = 500
-        max_polls = (timeout_seconds * 1000) // poll_interval_ms
-
-        for _ in range(max_polls):
-            # Wait until we have the flow token (required)
-            # Dataverse token is optional since not all pages trigger Dataverse requests
-            if captured_flow_token:
-                break
-            try:
-                page.wait_for_timeout(poll_interval_ms)
-            except Exception:
-                break
-
-        context.close()
-
-    if not captured_flow_token:
-        raise RuntimeError("Failed to capture authentication token")
-
-    save_tokens(captured_flow_token, captured_dataverse_token)
-    return captured_flow_token, captured_dataverse_token
 
 
 # Flow registry functions
@@ -287,50 +184,19 @@ def sanitize_label(display_name: str) -> str:
 
     - Converts to lowercase
     - Replaces spaces and special characters with hyphens
+    - Preserves underscores
     - Removes consecutive hyphens
-    - Strips leading/trailing hyphens
+    - Strips leading/trailing hyphens and underscores
     """
-    # Convert to lowercase and replace spaces/special chars with hyphens
-    label = re.sub(r"[^a-zA-Z0-9]+", "-", display_name.lower())
+    # Convert to lowercase and replace spaces/special chars with hyphens (preserve underscores)
+    label = re.sub(r"[^a-zA-Z0-9_]+", "-", display_name.lower())
     # Remove consecutive hyphens
     label = re.sub(r"-+", "-", label)
-    # Strip leading/trailing hyphens
-    label = label.strip("-")
+    # Strip leading/trailing hyphens and underscores
+    label = label.strip("-_")
     return label or "unnamed-flow"
 
 
 def build_flow_url(environment_id: str, flow_id: str) -> str:
     """Build a Power Automate URL from environment_id and flow_id."""
     return f"https://make.powerautomate.com/environments/{environment_id}/flows/{flow_id}/details"
-
-
-# Git utilities
-def is_git_initialized() -> bool:
-    """Check if git is initialized in the current directory."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
-def _ensure_gitignore_has_pafs() -> bool:
-    """Ensure .pafs is in .gitignore. Returns True if file was modified."""
-    gitignore = Path(".gitignore")
-    pafs_entry = ".pafs"
-
-    if gitignore.exists():
-        content = gitignore.read_text()
-        # Check if .pafs is already in gitignore (as its own line)
-        lines = content.splitlines()
-        if pafs_entry in lines:
-            return False
-        # Append .pafs
-        if content and not content.endswith("\n"):
-            content += "\n"
-        content += f"{pafs_entry}\n"
-        gitignore.write_text(content)
-    else:
-        gitignore.write_text(f"{pafs_entry}\n")
-
-    return True
