@@ -412,9 +412,9 @@ def cmd_add(url: str, label: str | None = None) -> None:
 
     if added_labels:
         save_flows(flows)
-        # Sync newly added flows
-        print(f"\nSyncing {len(added_labels)} flow(s)...")
-        cmd_sync(added_labels)
+        # Pull newly added flows
+        print(f"\nPulling {len(added_labels)} flow(s)...")
+        cmd_pull(added_labels)
     else:
         print("No flows were added")
 
@@ -462,51 +462,51 @@ def cmd_list() -> None:
         print(label)
 
 
-def cmd_sync(labels: list[str] | None) -> None:
-    """Sync flows from Power Automate to local JSON files."""
+def cmd_pull(labels: list[str] | None) -> None:
+    """Pull flows from Power Automate to local JSON files."""
     flows = load_flows()
 
     if not flows:
         print("No flows registered. Run 'pafs add <url>' to add one")
         return
 
-    # Auto-discover new flows in tracked solutions when syncing all
+    # Auto-discover new flows in tracked solutions when pulling all
     if labels is None:
         discovered = _discover_solution_flows(flows)
         if discovered:
             save_flows(flows)
             print(f"Discovered {len(discovered)} new flow(s)")
 
-    # Determine which flows to sync
+    # Determine which flows to pull
     if labels:
-        to_sync = {l: flows[l] for l in labels if l in flows}
+        to_pull = {l: flows[l] for l in labels if l in flows}
         missing = [l for l in labels if l not in flows]
         if missing:
             print(f"Flows not found: {', '.join(missing)}")
     else:
-        to_sync = flows
+        to_pull = flows
 
-    if not to_sync:
-        print("Nothing to sync")
+    if not to_pull:
+        print("Nothing to pull")
         return
 
-    synced_files = []
+    pulled_files = []
 
-    for label, flow_info in to_sync.items():
+    for label, flow_info in to_pull.items():
         env_id = flow_info["environment_id"]
         flow_id = flow_info["flow_id"]
         flow_url = build_flow_url(env_id, flow_id)
 
-        print(f"Syncing '{label}'...")
+        print(f"Pulling '{label}'...")
         flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
 
         file_path = Path(f"{label}.json")
         file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
-        synced_files.append(str(file_path))
+        pulled_files.append(str(file_path))
         print(f"  Saved {file_path}")
 
-    if synced_files:
-        git_commit_files(synced_files, "Synced from Power Automate")
+    if pulled_files:
+        git_commit_files(pulled_files, "Pulled from Power Automate")
 
 
 def cmd_push(labels: list[str] | None, message: str) -> None:

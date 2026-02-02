@@ -36,7 +36,7 @@ PAFS (Power Automate Flow Sync) is a CLI tool that syncs Power Automate flows to
 ### Key Files
 
 - `src/main.py` - CLI entry point with argparse setup
-- `src/commands.py` - Command implementations (init, add, del, list, sync, push)
+- `src/commands.py` - Command implementations (init, add, del, list, pull, push)
 - `src/auth.py` - Token capture and refresh via Playwright
 - `src/pa_api.py` - Power Automate REST API client
 

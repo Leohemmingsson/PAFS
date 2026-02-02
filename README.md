@@ -68,8 +68,8 @@ pafs add <label> <power-automate-url>
 # List tracked flows
 pafs list
 
-# Sync flows from Power Automate to local JSON
-pafs sync
+# Pull flows from Power Automate to local JSON
+pafs pull
 
 # Push local changes to Power Automate
 pafs push -m "Your commit message"
@@ -107,7 +107,7 @@ PAFS includes an MCP (Model Context Protocol) server that allows LLM clients lik
 | `list_flows` | List all registered flows |
 | `add_flow` | Register a new flow (requires label and URL) |
 | `remove_flow` | Remove a flow and delete its local file |
-| `sync_flows` | Download flows from Power Automate |
+| `pull_flows` | Download flows from Power Automate |
 | `push_flows` | Upload local flows to Power Automate |
 
 ## Troubleshooting

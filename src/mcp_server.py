@@ -187,11 +187,11 @@ def remove_flow(label: str) -> dict:
 
 
 @mcp.tool
-def sync_flows(labels: str | None = None) -> dict:
+def pull_flows(labels: str | None = None) -> dict:
     """Download flows from Power Automate to local JSON files.
 
     Args:
-        labels: Comma-separated list of flow labels to sync (default: all)
+        labels: Comma-separated list of flow labels to pull (default: all)
     """
     flows = load_flows()
 
@@ -201,19 +201,19 @@ def sync_flows(labels: str | None = None) -> dict:
     # Parse labels
     if labels:
         label_list = [l.strip() for l in labels.split(",") if l.strip()]
-        to_sync = {l: flows[l] for l in label_list if l in flows}
+        to_pull = {l: flows[l] for l in label_list if l in flows}
         missing = [l for l in label_list if l not in flows]
     else:
-        to_sync = flows
+        to_pull = flows
         missing = []
 
-    if not to_sync:
-        return {"status": "error", "message": "No matching flows to sync"}
+    if not to_pull:
+        return {"status": "error", "message": "No matching flows to pull"}
 
-    synced = []
+    pulled = []
     errors = []
 
-    for label, flow_info in to_sync.items():
+    for label, flow_info in to_pull.items():
         env_id = flow_info["environment_id"]
         flow_id = flow_info["flow_id"]
 
@@ -221,32 +221,32 @@ def sync_flows(labels: str | None = None) -> dict:
             flow_data = _api_request(get_flow, env_id, flow_id)
             file_path = Path(f"{label}.json")
             file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
-            synced.append(label)
+            pulled.append(label)
         except Exception as e:
             errors.append({"label": label, "error": str(e)})
 
     # Git commit if successful
     git_committed = False
-    if synced and is_git_initialized():
-        files = [f"{l}.json" for l in synced]
+    if pulled and is_git_initialized():
+        files = [f"{l}.json" for l in pulled]
         subprocess.run(["git", "add"] + files, check=True, capture_output=True)
         result = subprocess.run(["git", "diff", "--cached", "--quiet"])
         if result.returncode != 0:
             subprocess.run(
-                ["git", "commit", "-m", "Synced from Power Automate"],
+                ["git", "commit", "-m", "Pulled from Power Automate"],
                 check=True,
                 capture_output=True,
             )
             git_committed = True
 
     result = {
-        "status": "synced",
-        "synced": synced,
+        "status": "pulled",
+        "pulled": pulled,
         "errors": errors,
         "missing": missing,
         "git_committed": git_committed,
     }
-    if synced and not is_git_initialized():
+    if pulled and not is_git_initialized():
         result["warning"] = "Git not initialized. Run 'init' tool to enable git tracking."
     return result
 

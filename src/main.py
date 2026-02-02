@@ -3,7 +3,7 @@
 import argparse
 import importlib.metadata
 
-from .commands import cmd_add, cmd_auth, cmd_del, cmd_init, cmd_list, cmd_push, cmd_sync
+from .commands import cmd_add, cmd_auth, cmd_del, cmd_init, cmd_list, cmd_pull, cmd_push
 
 
 def main() -> None:
@@ -39,12 +39,12 @@ def main() -> None:
     # list
     subparsers.add_parser("list", help="List all registered flows")
 
-    # sync
-    sync_parser = subparsers.add_parser("sync", help="Sync flows from Power Automate")
-    sync_parser.add_argument(
+    # pull
+    pull_parser = subparsers.add_parser("pull", help="Pull flows from Power Automate")
+    pull_parser.add_argument(
         "labels",
         nargs="?",
-        help="Comma-separated labels to sync (default: all)",
+        help="Comma-separated labels to pull (default: all)",
     )
 
     # push
@@ -79,8 +79,8 @@ def main() -> None:
         cmd_del(args.label)
     elif args.command == "list":
         cmd_list()
-    elif args.command == "sync":
-        cmd_sync(parse_labels(args.labels))
+    elif args.command == "pull":
+        cmd_pull(parse_labels(args.labels))
     elif args.command == "push":
         cmd_push(parse_labels(args.labels), args.message)
 
