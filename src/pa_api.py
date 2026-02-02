@@ -60,7 +60,9 @@ def get_environment(access_token: str, environment_id: str) -> dict:
 
 
 def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) -> list[dict]:
-    """Get all flows in a solution via Dataverse API.
+    """Get cloud flows in a solution via Dataverse API.
+
+    Only returns cloud flows (category=5), excluding desktop flows and other workflow types.
 
     Args:
         access_token: Bearer token for authentication
@@ -70,18 +72,7 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
     Returns:
         List of flow objects with msdyn_displayname and msdyn_objectid
     """
-    # Ensure URL doesn't have trailing slash
     dataverse_url = dataverse_url.rstrip("/")
-
-    # Query for solution components that are workflows (includes cloud flows)
-    # Filter by componentlogicalname which is the entity type
-    filter_query = (
-        f"msdyn_solutionid eq '{solution_id}' "
-        f"and msdyn_componentlogicalname eq 'workflow'"
-    )
-    encoded_filter = urllib.parse.quote(filter_query)
-
-    url = f"{dataverse_url}/api/data/v9.0/msdyn_solutioncomponentsummaries?$filter={encoded_filter}"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -90,14 +81,49 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
         "OData-Version": "4.0",
     }
 
+    # Step 1: Get workflow IDs from solution components
+    filter_query = (
+        f"msdyn_solutionid eq '{solution_id}' "
+        f"and msdyn_componentlogicalname eq 'workflow'"
+    )
+    url = f"{dataverse_url}/api/data/v9.0/msdyn_solutioncomponentsummaries?$filter={urllib.parse.quote(filter_query)}"
+
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(request) as response:
             data = json.loads(response.read().decode("utf-8"))
-            return data.get("value", [])
+            solution_workflows = data.get("value", [])
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         raise RuntimeError(f"Dataverse API error {e.code}: {error_body}") from e
+
+    if not solution_workflows:
+        return []
+
+    # Step 2: Query workflows entity to filter for cloud flows only (category=5)
+    workflow_ids = [w.get("msdyn_objectid") for w in solution_workflows if w.get("msdyn_objectid")]
+
+    if not workflow_ids:
+        return []
+
+    # Build filter: (workflowid eq 'id1' or workflowid eq 'id2' ...) and category eq 5
+    id_filters = " or ".join(f"workflowid eq '{wid}'" for wid in workflow_ids)
+    workflow_filter = f"({id_filters}) and category eq 5"
+
+    workflow_url = f"{dataverse_url}/api/data/v9.2/workflows?$filter={urllib.parse.quote(workflow_filter)}&$select=workflowid"
+
+    request = urllib.request.Request(workflow_url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            cloud_flows = data.get("value", [])
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise RuntimeError(f"Dataverse API error {e.code}: {error_body}") from e
+
+    # Step 3: Return only solution workflows that are cloud flows
+    cloud_flow_ids = {f.get("workflowid") for f in cloud_flows}
+    return [w for w in solution_workflows if w.get("msdyn_objectid") in cloud_flow_ids]
 
 
 def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
