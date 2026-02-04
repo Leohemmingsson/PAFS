@@ -462,7 +462,46 @@ def cmd_list() -> None:
         print(label)
 
 
-def cmd_pull(labels: list[str] | None) -> None:
+def _rename_flow_if_needed(
+    flows: dict,
+    old_label: str,
+    new_display_name: str,
+    existing_labels: set[str],
+) -> tuple[str, bool]:
+    """Check if flow needs renaming and perform it.
+
+    Returns: (final_label, was_renamed)
+    """
+    new_base_label = sanitize_label(new_display_name)
+
+    if new_base_label == old_label:
+        return old_label, False
+
+    # Get unique label excluding current label
+    labels_for_check = existing_labels - {old_label}
+    new_label = _get_unique_label(new_base_label, labels_for_check)
+
+    old_file = Path(f"{old_label}.json")
+    new_file = Path(f"{new_label}.json")
+
+    # Edge case: target file already exists
+    if new_file.exists() and old_file.exists():
+        print(f"  Warning: Cannot rename to '{new_label}': file already exists")
+        return old_label, False
+
+    print(f"  Renamed: '{old_label}' -> '{new_label}'")
+
+    # Update registry
+    flows[new_label] = flows.pop(old_label)
+
+    # Git mv if old file exists
+    if old_file.exists():
+        subprocess.run(["git", "mv", str(old_file), str(new_file)], check=True)
+
+    return new_label, True
+
+
+def cmd_pull(labels: list[str] | None, force: bool = False) -> None:
     """Pull flows from Power Automate to local JSON files."""
     flows = load_flows()
 
@@ -491,8 +530,11 @@ def cmd_pull(labels: list[str] | None) -> None:
         return
 
     pulled_files = []
+    flows_modified = False
+    existing_labels = set(flows.keys())
 
-    for label, flow_info in to_pull.items():
+    # Iterate over copy since we may modify flows dict
+    for label, flow_info in list(to_pull.items()):
         env_id = flow_info["environment_id"]
         flow_id = flow_info["flow_id"]
         flow_url = build_flow_url(env_id, flow_id)
@@ -500,10 +542,26 @@ def cmd_pull(labels: list[str] | None) -> None:
         print(f"Pulling '{label}'...")
         flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
 
-        file_path = Path(f"{label}.json")
+        # Handle label rename when force flag is set
+        final_label = label
+        if force:
+            display_name = flow_data.get("properties", {}).get("displayName", "")
+            if display_name:
+                final_label, renamed = _rename_flow_if_needed(
+                    flows, label, display_name, existing_labels
+                )
+                if renamed:
+                    flows_modified = True
+                    existing_labels.discard(label)
+                    existing_labels.add(final_label)
+
+        file_path = Path(f"{final_label}.json")
         file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
         pulled_files.append(str(file_path))
         print(f"  Saved {file_path}")
+
+    if flows_modified:
+        save_flows(flows)
 
     if pulled_files:
         git_commit_files(pulled_files, "Pulled from Power Automate")

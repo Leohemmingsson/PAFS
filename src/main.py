@@ -46,6 +46,11 @@ def main() -> None:
         nargs="?",
         help="Comma-separated labels to pull (default: all)",
     )
+    pull_parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Clean re-sync: pull all flows and update labels to match current names",
+    )
 
     # push
     push_parser = subparsers.add_parser("push", help="Push flows to Power Automate")
@@ -80,7 +85,7 @@ def main() -> None:
     elif args.command == "list":
         cmd_list()
     elif args.command == "pull":
-        cmd_pull(parse_labels(args.labels))
+        cmd_pull(parse_labels(args.labels), force=args.force)
     elif args.command == "push":
         cmd_push(parse_labels(args.labels), args.message)
 
