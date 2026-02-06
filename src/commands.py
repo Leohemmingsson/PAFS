@@ -1,25 +1,21 @@
-"""Command implementations for PAFS CLI."""
+"""Command implementations for PAFS CLI - thin adapter over services."""
 
-import json
-import subprocess
-from pathlib import Path
-
-from .auth import api_request_with_auth, ensure_playwright_browsers, get_tokens
-from .git import ensure_gitignore_has_pafs, git_commit_files, is_git_initialized
-from .pa_api import get_environment, get_flow, get_solution_flows, get_solutions, update_flow
-from .shared import (
-    build_flow_url,
-    clear_token,
-    detect_url_type,
-    load_flows,
-    load_solutions,
-    parse_environment_url,
-    parse_flow_url,
-    parse_solution_url,
-    sanitize_label,
-    save_flows,
-    save_solutions,
+from .services import (
+    ServiceResult,
+    add_flow,
+    add_solution_flows,
+    clear_auth,
+    create_flow_service,
+    delete_flow,
+    get_available_solutions,
+    get_dataverse_url,
+    get_unique_label,
+    init_repo,
+    list_flows_service,
+    pull_flows_service,
+    push_flows_service,
 )
+from .shared import detect_url_type, parse_environment_url, parse_solution_url
 
 
 def select_from_menu(options: list[str], title: str) -> int | None:
@@ -64,151 +60,24 @@ def select_from_menu(options: list[str], title: str) -> int | None:
                 return None
 
 
-def _get_unique_label(base_label: str, existing_labels: set[str]) -> str:
-    """Generate a unique label by appending a number if needed."""
-    if base_label not in existing_labels:
-        return base_label
-    counter = 2
-    while f"{base_label}-{counter}" in existing_labels:
-        counter += 1
-    return f"{base_label}-{counter}"
-
-
-def _add_single_flow(
-    flows: dict,
-    env_id: str,
-    flow_id: str,
-    label: str,
-    solution_id: str | None = None,
-) -> bool:
-    """Add a single flow to the registry. Returns True if added, False if skipped."""
-    # Check for duplicate flow_id
-    for existing_label, info in flows.items():
-        if info["flow_id"] == flow_id:
-            if existing_label == label:
-                print(f"Flow '{label}' already exists, skipping")
-            else:
-                print(f"Warning: Flow ID {flow_id} already exists as '{existing_label}'")
-            return False
-
-    flow_entry = {
-        "environment_id": env_id,
-        "flow_id": flow_id,
-    }
-    if solution_id:
-        flow_entry["solution_id"] = solution_id
-
-    flows[label] = flow_entry
-    return True
-
-
-def _discover_solution_flows(flows: dict) -> list[str]:
-    """Discover new flows in tracked solutions. Returns list of newly added labels."""
-    solutions_registry = load_solutions()
-    if not solutions_registry:
-        return []
-
-    # Get existing flow_ids for quick lookup
-    existing_flow_ids = {info["flow_id"] for info in flows.values()}
-    existing_labels = set(flows.keys())
-    added_labels = []
-
-    for solution_id, sol_info in solutions_registry.items():
-        env_id = sol_info["environment_id"]
-        ignored = set(sol_info.get("ignored", []))
-
-        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
-
-        try:
-            # Get Dataverse URL
-            env_data = api_request_with_auth(get_environment, auth_url, env_id)
-            dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
-
-            if not dataverse_url:
-                continue
-
-            # Get flows in solution (uses Dataverse API)
-            solution_flows = api_request_with_auth(
-                get_solution_flows, auth_url, dataverse_url, solution_id,
-                use_dataverse_token=True
-            )
-
-            for flow_info in solution_flows:
-                flow_id = flow_info.get("msdyn_objectid")
-
-                # Skip if already tracked, or if in ignored list
-                if not flow_id or flow_id in existing_flow_ids or flow_id in ignored:
-                    continue
-
-                display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
-                label = sanitize_label(display_name)
-                label = _get_unique_label(label, existing_labels)
-
-                flows[label] = {
-                    "environment_id": env_id,
-                    "flow_id": flow_id,
-                    "solution_id": solution_id,
-                }
-                existing_flow_ids.add(flow_id)
-                existing_labels.add(label)
-                added_labels.append(label)
-                print(f"Discovered new flow: '{label}'")
-
-        except Exception as e:
-            print(f"Warning: Could not check solution {solution_id}: {e}")
-
-    return added_labels
+def _print_result(result: ServiceResult) -> None:
+    """Print messages and errors from a service result."""
+    for msg in result.messages:
+        print(msg)
+    for err in result.errors:
+        print(f"Error: {err}")
 
 
 def cmd_init() -> None:
     """Initialize git repo and commit any existing flow JSON files."""
-    git_initialized = is_git_initialized()
-    gitignore_has_pafs = Path(".gitignore").exists() and ".pafs" in Path(".gitignore").read_text().splitlines()
-
-    # Already fully initialized
-    if git_initialized and gitignore_has_pafs:
-        print("Already initialized")
-        return
-
-    print("Initializing...")
-
-    # Initialize git if needed
-    if not git_initialized:
-        subprocess.run(["git", "init"], check=True)
-
-    # Ensure .pafs is in .gitignore
-    gitignore_modified = ensure_gitignore_has_pafs()
-
-    # Collect files to commit
-    files_to_commit = []
-
-    if gitignore_modified:
-        files_to_commit.append(".gitignore")
-
-    # Find flows that have JSON files on disk
-    flows = load_flows()
-    for label in flows:
-        file_path = Path(f"{label}.json")
-        if file_path.exists():
-            files_to_commit.append(str(file_path))
-
-    if files_to_commit:
-        subprocess.run(["git", "add"] + files_to_commit, check=True)
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(["git", "commit", "-m", "Initial pafs commit"], check=True)
-            print("Committed to git")
-        else:
-            print("No changes to commit")
-    else:
-        print("No files to commit")
+    result = init_repo()
+    _print_result(result)
 
 
 def cmd_auth() -> None:
     """Authenticate with Power Automate by opening a browser to capture tokens."""
-    clear_token()
-    print("Cleared existing tokens")
-    get_tokens("https://make.powerautomate.com/", require_dataverse_token=False)
+    result = clear_auth()
+    _print_result(result)
 
 
 def cmd_add(url: str, label: str | None = None) -> None:
@@ -219,65 +88,22 @@ def cmd_add(url: str, label: str | None = None) -> None:
         print(f"Error: {e}")
         return
 
-    flows = load_flows()
-    added_labels = []
-
-    if url_type == "flow":
-        try:
-            env_id, flow_id, solution_id = parse_flow_url(url)
-        except ValueError as e:
-            print(f"Error: {e}")
-            return
-
-        # Get display name from API if no label provided
-        if label is None:
-            flow_url = build_flow_url(env_id, flow_id)
-            print("Fetching flow info...")
-            flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
-            display_name = flow_data.get("properties", {}).get("displayName", "unnamed-flow")
-            label = sanitize_label(display_name)
-            label = _get_unique_label(label, set(flows.keys()))
-
-        # Don't pass solution_id for single flow adds - only track the specific flow
-        if _add_single_flow(flows, env_id, flow_id, label):
-            added_labels.append(label)
-            print(f"Added flow '{label}'")
-
-            # Remove from any solution's ignored list
-            solutions = load_solutions()
-            modified = False
-            for sol_info in solutions.values():
-                if flow_id in sol_info.get("ignored", []):
-                    sol_info["ignored"].remove(flow_id)
-                    modified = True
-            if modified:
-                save_solutions(solutions)
-
-    elif url_type == "environment":
-        # Environment URL without solution ID - let user select a solution
+    if url_type == "environment":
+        # Environment URL without solution ID - let user select a solution interactively
         try:
             env_id = parse_environment_url(url)
         except ValueError as e:
             print(f"Error: {e}")
             return
 
-        # Get environment info to find Dataverse URL
+        # Get available solutions
         print("Fetching environment info...")
-        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
-        env_data = api_request_with_auth(get_environment, auth_url, env_id)
-
-        dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
-        if not dataverse_url:
-            print("Error: Could not find Dataverse URL for this environment")
-            print("This environment may not have Dataverse enabled")
+        solutions_result = get_available_solutions(env_id)
+        if not solutions_result.success:
+            _print_result(solutions_result)
             return
 
-        # Fetch solutions list (uses Dataverse API)
-        print("Fetching solutions...")
-        solutions = api_request_with_auth(
-            get_solutions, auth_url, dataverse_url, use_dataverse_token=True
-        )
-
+        solutions = solutions_result.data.get("solutions", [])
         if not solutions:
             print("No solutions found in this environment")
             return
@@ -313,303 +139,81 @@ def cmd_add(url: str, label: str | None = None) -> None:
         selected_name = solutions[selected_index].get("friendlyname", "Unknown")
         print(f"\nSelected: {selected_name}")
 
-        # Now fetch flows from the selected solution (uses Dataverse API)
-        print("Fetching flows from solution...")
-        solution_flows = api_request_with_auth(
-            get_solution_flows, auth_url, dataverse_url, solution_id,
-            use_dataverse_token=True
+        # Add the solution's flows
+        from .shared import load_flows, save_flows
+
+        flows = load_flows()
+        auth_url = solutions_result.data["auth_url"]
+        dataverse_url = solutions_result.data["dataverse_url"]
+
+        sol_result = add_solution_flows(
+            flows, env_id, solution_id, selected_name, auth_url, dataverse_url
         )
+        _print_result(sol_result)
 
-        if not solution_flows:
-            print("No flows found in solution")
-            return
-
-        print(f"Found {len(solution_flows)} flow(s) in solution")
-
-        # Save solution to solutions.json for auto-discovery
-        solutions_registry = load_solutions()
-        if solution_id not in solutions_registry:
-            solutions_registry[solution_id] = {
-                "environment_id": env_id,
-                "name": selected_name,
-                "ignored": []
-            }
-            save_solutions(solutions_registry)
-
-        existing_labels = set(flows.keys())
-        for flow_info in solution_flows:
-            display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
-            flow_id = flow_info.get("msdyn_objectid")
-
-            if not flow_id:
-                continue
-
-            flow_label = sanitize_label(display_name)
-            flow_label = _get_unique_label(flow_label, existing_labels)
-
-            if _add_single_flow(flows, env_id, flow_id, flow_label, solution_id):
-                added_labels.append(flow_label)
-                existing_labels.add(flow_label)
-                print(f"Added flow '{flow_label}'")
-
-    elif url_type == "solution":
-        try:
-            env_id, solution_id = parse_solution_url(url)
-        except ValueError as e:
-            print(f"Error: {e}")
-            return
-
-        # Get environment info to find Dataverse URL
-        print("Fetching environment info...")
-        # Use a generic URL for auth since we don't have a specific flow
-        auth_url = f"https://make.powerautomate.com/environments/{env_id}"
-        env_data = api_request_with_auth(get_environment, auth_url, env_id)
-
-        dataverse_url = env_data.get("properties", {}).get("linkedEnvironmentMetadata", {}).get("instanceUrl")
-        if not dataverse_url:
-            print("Error: Could not find Dataverse URL for this environment")
-            print("This environment may not have Dataverse enabled")
-            return
-
-        # Get all flows in the solution (uses Dataverse API)
-        print("Fetching flows from solution...")
-        solution_flows = api_request_with_auth(
-            get_solution_flows, auth_url, dataverse_url, solution_id,
-            use_dataverse_token=True
-        )
-
-        if not solution_flows:
-            print("No flows found in solution")
-            return
-
-        print(f"Found {len(solution_flows)} flow(s) in solution")
-
-        # Save solution to solutions.json for auto-discovery
-        solutions_registry = load_solutions()
-        if solution_id not in solutions_registry:
-            solutions_registry[solution_id] = {
-                "environment_id": env_id,
-                "name": "Unknown",  # Solution name not available from URL
-                "ignored": []
-            }
-            save_solutions(solutions_registry)
-
-        existing_labels = set(flows.keys())
-        for flow_info in solution_flows:
-            display_name = flow_info.get("msdyn_displayname", "unnamed-flow")
-            flow_id = flow_info.get("msdyn_objectid")
-
-            if not flow_id:
-                continue
-
-            flow_label = sanitize_label(display_name)
-            flow_label = _get_unique_label(flow_label, existing_labels)
-
-            if _add_single_flow(flows, env_id, flow_id, flow_label, solution_id):
-                added_labels.append(flow_label)
-                existing_labels.add(flow_label)
-                print(f"Added flow '{flow_label}'")
-
-    if added_labels:
-        save_flows(flows)
-        # Pull newly added flows
-        print(f"\nPulling {len(added_labels)} flow(s)...")
-        cmd_pull(added_labels)
+        added_labels = sol_result.data.get("added_labels", [])
+        if added_labels:
+            save_flows(flows)
+            # Pull newly added flows
+            print(f"\nPulling {len(added_labels)} flow(s)...")
+            cmd_pull(added_labels)
+        else:
+            print("No flows were added")
     else:
-        print("No flows were added")
+        # Flow or solution URL - use service directly
+        result = add_flow(url, label, url_type=url_type)
+        _print_result(result)
+
+        added_labels = result.data.get("added_labels", [])
+        if added_labels:
+            # Pull newly added flows
+            print(f"\nPulling {len(added_labels)} flow(s)...")
+            cmd_pull(added_labels)
+
+
+def cmd_create(target: str, name: str, from_label: str | None = None) -> None:
+    """Create a new flow in Power Automate."""
+    result = create_flow_service(target, name, from_label)
+    _print_result(result)
 
 
 def cmd_del(label: str) -> None:
     """Remove a flow from the registry and delete its JSON file."""
-    flows = load_flows()
-
-    if label not in flows:
-        print(f"Flow '{label}' not found")
-        return
-
-    flow_info = flows[label]
-    solution_id = flow_info.get("solution_id")
-
-    # Add to solution's ignored list if flow is from a tracked solution
-    if solution_id:
-        solutions = load_solutions()
-        if solution_id in solutions:
-            ignored = solutions[solution_id].setdefault("ignored", [])
-            if flow_info["flow_id"] not in ignored:
-                ignored.append(flow_info["flow_id"])
-            save_solutions(solutions)
-
-    del flows[label]
-    save_flows(flows)
-    print(f"Removed '{label}'")
-
-    # Delete the JSON file if it exists
-    flow_file = Path(f"{label}.json")
-    if flow_file.exists():
-        flow_file.unlink()
-        print(f"Deleted {flow_file}")
+    result = delete_flow(label)
+    _print_result(result)
 
 
 def cmd_list() -> None:
-    """List all registered flows."""
-    flows = load_flows()
+    """List all registered flows and solutions."""
+    result = list_flows_service()
 
-    if not flows:
-        print("No flows registered. Run 'pafs add <url>' to add one")
+    flows = result.data.get("flows", [])
+    solutions = result.data.get("solutions", [])
+
+    if not flows and not solutions:
+        print("No flows or solutions registered. Run 'pafs add <url>' to add one")
         return
 
-    for label in flows:
-        print(label)
+    if flows:
+        print("Flows:")
+        for flow in flows:
+            print(f"  * {flow['label']}")
 
-
-def _rename_flow_if_needed(
-    flows: dict,
-    old_label: str,
-    new_display_name: str,
-    existing_labels: set[str],
-) -> tuple[str, bool]:
-    """Check if flow needs renaming and perform it.
-
-    Returns: (final_label, was_renamed)
-    """
-    new_base_label = sanitize_label(new_display_name)
-
-    if new_base_label == old_label:
-        return old_label, False
-
-    # Get unique label excluding current label
-    labels_for_check = existing_labels - {old_label}
-    new_label = _get_unique_label(new_base_label, labels_for_check)
-
-    old_file = Path(f"{old_label}.json")
-    new_file = Path(f"{new_label}.json")
-
-    # Edge case: target file already exists
-    if new_file.exists() and old_file.exists():
-        print(f"  Warning: Cannot rename to '{new_label}': file already exists")
-        return old_label, False
-
-    print(f"  Renamed: '{old_label}' -> '{new_label}'")
-
-    # Update registry
-    flows[new_label] = flows.pop(old_label)
-
-    # Git mv if old file exists
-    if old_file.exists():
-        subprocess.run(["git", "mv", str(old_file), str(new_file)], check=True)
-
-    return new_label, True
+    if solutions:
+        if flows:
+            print()
+        print("Solutions:")
+        for sol in solutions:
+            print(f"  * {sol['label']}")
 
 
 def cmd_pull(labels: list[str] | None, force: bool = False) -> None:
     """Pull flows from Power Automate to local JSON files."""
-    flows = load_flows()
-
-    if not flows:
-        print("No flows registered. Run 'pafs add <url>' to add one")
-        return
-
-    # Auto-discover new flows in tracked solutions when pulling all
-    if labels is None:
-        discovered = _discover_solution_flows(flows)
-        if discovered:
-            save_flows(flows)
-            print(f"Discovered {len(discovered)} new flow(s)")
-
-    # Determine which flows to pull
-    if labels:
-        to_pull = {l: flows[l] for l in labels if l in flows}
-        missing = [l for l in labels if l not in flows]
-        if missing:
-            print(f"Flows not found: {', '.join(missing)}")
-    else:
-        to_pull = flows
-
-    if not to_pull:
-        print("Nothing to pull")
-        return
-
-    pulled_files = []
-    flows_modified = False
-    existing_labels = set(flows.keys())
-
-    # Iterate over copy since we may modify flows dict
-    for label, flow_info in list(to_pull.items()):
-        env_id = flow_info["environment_id"]
-        flow_id = flow_info["flow_id"]
-        flow_url = build_flow_url(env_id, flow_id)
-
-        print(f"Pulling '{label}'...")
-        flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
-
-        # Handle label rename when force flag is set
-        final_label = label
-        if force:
-            display_name = flow_data.get("properties", {}).get("displayName", "")
-            if display_name:
-                final_label, renamed = _rename_flow_if_needed(
-                    flows, label, display_name, existing_labels
-                )
-                if renamed:
-                    flows_modified = True
-                    existing_labels.discard(label)
-                    existing_labels.add(final_label)
-
-        file_path = Path(f"{final_label}.json")
-        file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
-        pulled_files.append(str(file_path))
-        print(f"  Saved {file_path}")
-
-    if flows_modified:
-        save_flows(flows)
-
-    if pulled_files:
-        git_commit_files(pulled_files, "Pulled from Power Automate")
+    result = pull_flows_service(labels, force)
+    _print_result(result)
 
 
 def cmd_push(labels: list[str] | None, message: str) -> None:
     """Push local JSON files to Power Automate."""
-    flows = load_flows()
-
-    if not flows:
-        print("No flows registered. Run 'pafs add <url>' to add one")
-        return
-
-    # Determine which flows to push
-    if labels:
-        to_push = {l: flows[l] for l in labels if l in flows}
-        missing = [l for l in labels if l not in flows]
-        if missing:
-            print(f"Flows not found: {', '.join(missing)}")
-    else:
-        to_push = flows
-
-    if not to_push:
-        print("Nothing to push")
-        return
-
-    pushed_files = []
-
-    for label, flow_info in to_push.items():
-        file_path = Path(f"{label}.json")
-        if not file_path.exists():
-            print(f"Skipping '{label}': {file_path} not found")
-            continue
-
-        env_id = flow_info["environment_id"]
-        flow_id = flow_info["flow_id"]
-        flow_url = build_flow_url(env_id, flow_id)
-
-        print(f"Pushing '{label}'...")
-        try:
-            flow_data = json.loads(file_path.read_text())
-        except json.JSONDecodeError:
-            print(f"Skipping '{label}': invalid JSON in {file_path}")
-            continue
-
-        api_request_with_auth(update_flow, flow_url, flow_data, env_id, flow_id)
-        pushed_files.append(str(file_path))
-        print(f"  Pushed {file_path}")
-
-    if pushed_files:
-        git_commit_files(pushed_files, message)
+    result = push_flows_service(labels, message)
+    _print_result(result)

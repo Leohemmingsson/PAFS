@@ -3,7 +3,7 @@
 import argparse
 import importlib.metadata
 
-from .commands import cmd_add, cmd_auth, cmd_del, cmd_init, cmd_list, cmd_pull, cmd_push
+from .commands import cmd_add, cmd_auth, cmd_create, cmd_del, cmd_init, cmd_list, cmd_pull, cmd_push
 
 
 def main() -> None:
@@ -35,6 +35,16 @@ def main() -> None:
     # del
     del_parser = subparsers.add_parser("del", help="Remove a flow from the registry")
     del_parser.add_argument("label", help="Label of the flow to remove")
+
+    # create
+    create_parser = subparsers.add_parser("create", help="Create a new flow in Power Automate")
+    create_parser.add_argument("target", help="Solution label or environment URL")
+    create_parser.add_argument("name", help="Display name for the new flow")
+    create_parser.add_argument(
+        "--from",
+        dest="from_label",
+        help="Clone from existing flow label instead of using default template",
+    )
 
     # list
     subparsers.add_parser("list", help="List all registered flows")
@@ -82,6 +92,8 @@ def main() -> None:
         cmd_add(args.url, args.label)
     elif args.command == "del":
         cmd_del(args.label)
+    elif args.command == "create":
+        cmd_create(args.target, args.name, args.from_label)
     elif args.command == "list":
         cmd_list()
     elif args.command == "pull":

@@ -1,0 +1,43 @@
+{
+  "properties": {
+    "displayName": "",
+    "definition": {
+      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+      "contentVersion": "1.0.0.0",
+      "triggers": {
+        "manual": {
+          "type": "Request",
+          "kind": "Button",
+          "inputs": {
+            "schema": {
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          }
+        }
+      },
+      "actions": {
+        "Initialize_Variable": {
+          "type": "InitializeVariable",
+          "inputs": {
+            "variables": [
+              {
+                "name": "result",
+                "type": "string",
+                "value": ""
+              }
+            ]
+          },
+          "runAfter": {}
+        }
+      },
+      "outputs": {}
+    },
+    "parameters": {
+      "$connections": {
+        "value": {}
+      }
+    }
+  }
+}

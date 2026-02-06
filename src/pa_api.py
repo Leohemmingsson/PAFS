@@ -9,6 +9,17 @@ BASE_URL = "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple"
 API_VERSION = "2016-11-01"
 
 
+class PAFSAPIError(Exception):
+    """Custom exception for Power Automate API errors.
+
+    Preserves HTTP status code for proper 401 handling in auth layer.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _make_request(
     access_token: str, method: str, endpoint: str, body: dict | None = None
 ) -> dict:
@@ -25,8 +36,17 @@ def _make_request(
 
     request = urllib.request.Request(url, headers=headers, method=method, data=data)
 
-    with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Try to extract error message from response body
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+            message = error_body.get("error", {}).get("message", str(e))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            message = str(e)
+        raise PAFSAPIError(message, status_code=e.code) from e
 
 
 def get_flow(access_token: str, environment_id: str, flow_id: str) -> dict:
@@ -55,8 +75,16 @@ def get_environment(access_token: str, environment_id: str) -> dict:
         "Content-Type": "application/json",
     }
     request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+            message = error_body.get("error", {}).get("message", str(e))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            message = str(e)
+        raise PAFSAPIError(message, status_code=e.code) from e
 
 
 def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) -> list[dict]:
@@ -95,35 +123,48 @@ def get_solution_flows(access_token: str, dataverse_url: str, solution_id: str) 
             solution_workflows = data.get("value", [])
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
-        raise RuntimeError(f"Dataverse API error {e.code}: {error_body}") from e
+        raise PAFSAPIError(f"Dataverse API error: {error_body}", status_code=e.code) from e
 
     if not solution_workflows:
         return []
 
     # Step 2: Query workflows entity to filter for cloud flows only (category=5)
+    # Batch queries to avoid URL length limits (50 IDs per batch)
     workflow_ids = [w.get("msdyn_objectid") for w in solution_workflows if w.get("msdyn_objectid")]
 
     if not workflow_ids:
         return []
 
-    # Build filter: (workflowid eq 'id1' or workflowid eq 'id2' ...) and category eq 5
-    id_filters = " or ".join(f"workflowid eq '{wid}'" for wid in workflow_ids)
-    workflow_filter = f"({id_filters}) and category eq 5"
+    BATCH_SIZE = 50
+    cloud_flow_ids: set[str] = set()
 
-    workflow_url = f"{dataverse_url}/api/data/v9.2/workflows?$filter={urllib.parse.quote(workflow_filter)}&$select=workflowid"
+    for i in range(0, len(workflow_ids), BATCH_SIZE):
+        batch_ids = workflow_ids[i : i + BATCH_SIZE]
 
-    request = urllib.request.Request(workflow_url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(request) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            cloud_flows = data.get("value", [])
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        raise RuntimeError(f"Dataverse API error {e.code}: {error_body}") from e
+        # Build filter: (workflowid eq 'id1' or workflowid eq 'id2' ...) and category eq 5
+        id_filters = " or ".join(f"workflowid eq '{wid}'" for wid in batch_ids)
+        workflow_filter = f"({id_filters}) and category eq 5"
+
+        workflow_url = f"{dataverse_url}/api/data/v9.2/workflows?$filter={urllib.parse.quote(workflow_filter)}&$select=workflowid"
+
+        request = urllib.request.Request(workflow_url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                batch_flows = data.get("value", [])
+                cloud_flow_ids.update(f.get("workflowid") for f in batch_flows if f.get("workflowid"))
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            raise PAFSAPIError(f"Dataverse API error: {error_body}", status_code=e.code) from e
 
     # Step 3: Return only solution workflows that are cloud flows
-    cloud_flow_ids = {f.get("workflowid") for f in cloud_flows}
     return [w for w in solution_workflows if w.get("msdyn_objectid") in cloud_flow_ids]
+
+
+def create_flow(access_token: str, environment_id: str, flow_definition: dict) -> dict:
+    """POST - Create a new flow."""
+    endpoint = f"/environments/{environment_id}/flows"
+    return _make_request(access_token, "POST", endpoint, flow_definition)
 
 
 def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
@@ -157,6 +198,10 @@ def get_solutions(access_token: str, dataverse_url: str) -> list[dict]:
     }
 
     request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request) as response:
-        data = json.loads(response.read().decode("utf-8"))
-        return data.get("value", [])
+    try:
+        with urllib.request.urlopen(request) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return data.get("value", [])
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise PAFSAPIError(f"Dataverse API error: {error_body}", status_code=e.code) from e

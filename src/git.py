@@ -35,17 +35,29 @@ def ensure_gitignore_has_pafs() -> bool:
     return True
 
 
-def git_commit_files(files: list[str], message: str) -> None:
-    """Add and commit files to git. Shows warning if git is not initialized."""
+def git_commit_files(files: list[str], message: str) -> tuple[list[str], str]:
+    """Add and commit files to git. Returns (changed_files, commit_output)."""
     if not is_git_initialized():
-        print("Git not initialized. Run 'pafs init' to enable git tracking")
-        return
+        return [], ""
 
     subprocess.run(["git", "add"] + files, check=True)
-    # Only commit if there are staged changes
-    result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-    if result.returncode != 0:
-        subprocess.run(["git", "commit", "-m", message], check=True)
-        print("Committed to git")
-    else:
-        print("No changes to commit")
+
+    # Get list of staged files with changes
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        capture_output=True,
+        text=True,
+    )
+    changed = result.stdout.strip().splitlines() if result.stdout.strip() else []
+
+    commit_output = ""
+    if changed:
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", message],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_output = commit_result.stdout.strip()
+
+    return changed, commit_output

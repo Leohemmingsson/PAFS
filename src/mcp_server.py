@@ -1,149 +1,126 @@
 """MCP server for PAFS - allows LLM clients to manage Power Automate flows."""
 
-import json
-import subprocess
-import urllib.error
-from pathlib import Path
-
 from fastmcp import FastMCP
 
-from .auth import api_request_with_auth, get_tokens
-from .git import ensure_gitignore_has_pafs, is_git_initialized
-from .pa_api import get_flow, update_flow
-from .shared import (
-    build_flow_url,
-    clear_token,
-    load_flows,
-    load_flow_token,
-    load_solutions,
-    parse_flow_url,
-    save_flows,
-    save_solutions,
+from .services import (
+    add_flow,
+    clear_auth,
+    create_flow_service,
+    delete_flow,
+    get_available_solutions,
+    init_repo,
+    list_flows_service,
+    pull_flows_service,
+    push_flows_service,
 )
+from .shared import detect_url_type
 
 mcp = FastMCP(name="pafs")
 
 
-def _get_token() -> str:
-    """Get the saved token or capture a new one via browser."""
-    token = load_flow_token()
-    if token:
-        return token
-    flow_token, _ = get_tokens("https://make.powerautomate.com/")
-    return flow_token
-
-
-def _api_request(func, *args, **kwargs):
-    """Make an API request with token, refreshing via browser on 401."""
-    token = _get_token()
-    try:
-        return func(token, *args, **kwargs)
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            # Token expired, try to get a new one via browser
-            clear_token()
-            flow_token, _ = get_tokens("https://make.powerautomate.com/")
-            return func(flow_token, *args, **kwargs)
-        raise
+def _result_to_dict(result, include_data: bool = True) -> dict:
+    """Convert a ServiceResult to a dict for MCP response."""
+    response = {
+        "status": "success" if result.success else "error",
+        "messages": result.messages,
+    }
+    if result.errors:
+        response["errors"] = result.errors
+    if include_data and result.data:
+        response.update(result.data)
+    return response
 
 
 @mcp.tool
 def init() -> dict:
     """Initialize git repo and add .pafs to .gitignore."""
-    git_initialized = is_git_initialized()
-    gitignore_has_pafs = (
-        Path(".gitignore").exists()
-        and ".pafs" in Path(".gitignore").read_text().splitlines()
-    )
+    result = init_repo()
+    return _result_to_dict(result)
 
-    if git_initialized and gitignore_has_pafs:
-        return {"status": "already_initialized", "message": "Already initialized"}
 
-    messages = []
-
-    if not git_initialized:
-        subprocess.run(["git", "init"], check=True, capture_output=True)
-        messages.append("Initialized git repository")
-
-    gitignore_modified = ensure_gitignore_has_pafs()
-    if gitignore_modified:
-        messages.append("Added .pafs to .gitignore")
-
-    files_to_commit = []
-    if gitignore_modified:
-        files_to_commit.append(".gitignore")
-
-    flows = load_flows()
-    for label in flows:
-        file_path = Path(f"{label}.json")
-        if file_path.exists():
-            files_to_commit.append(str(file_path))
-
-    if files_to_commit:
-        subprocess.run(["git", "add"] + files_to_commit, check=True, capture_output=True)
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(
-                ["git", "commit", "-m", "Initial pafs commit"],
-                check=True,
-                capture_output=True,
-            )
-            messages.append(f"Committed {len(files_to_commit)} file(s)")
-
-    return {"status": "initialized", "messages": messages}
+@mcp.tool
+def auth() -> dict:
+    """Clear existing tokens and re-authenticate via browser."""
+    result = clear_auth()
+    return _result_to_dict(result)
 
 
 @mcp.tool
 def list_flows() -> dict:
-    """List all registered flows."""
-    flows = load_flows()
-    if not flows:
-        return {"flows": [], "message": "No flows registered"}
-
-    flow_list = []
-    for label, info in flows.items():
-        flow_list.append({
-            "label": label,
-            "environment_id": info["environment_id"],
-            "flow_id": info["flow_id"],
-            "url": build_flow_url(info["environment_id"], info["flow_id"]),
-        })
-
-    return {"flows": flow_list}
+    """List all registered flows with their metadata."""
+    result = list_flows_service()
+    return _result_to_dict(result)
 
 
 @mcp.tool
-def add_flow(label: str, url: str) -> dict:
-    """Register a new flow.
+def add_flow_tool(
+    url: str, label: str | None = None, solution_id: str | None = None
+) -> dict:
+    """Register a new flow or add all flows from a solution.
 
     Args:
-        label: A friendly name for the flow (used as filename)
-        url: The Power Automate URL for the flow
+        url: Power Automate URL (flow, solution, or environment URL)
+        label: Optional friendly name for single flow adds
+        solution_id: Required for environment URLs - use list_solutions first to get IDs
     """
+    # Detect URL type
     try:
-        environment_id, flow_id, solution_id = parse_flow_url(url)
+        url_type = detect_url_type(url)
     except ValueError as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "errors": [str(e)]}
 
-    flows = load_flows()
-    flow_entry = {
-        "environment_id": environment_id,
-        "flow_id": flow_id,
-    }
-    if solution_id:
-        flow_entry["solution_id"] = solution_id
-    flows[label] = flow_entry
-    save_flows(flows)
+    # For environment URLs, require solution_id
+    if url_type == "environment" and not solution_id:
+        return {
+            "status": "error",
+            "errors": [
+                "Environment URL requires solution_id parameter. "
+                "Use list_solutions tool first to get available solution IDs."
+            ],
+        }
 
-    result = {
-        "status": "added",
-        "label": label,
-        "environment_id": environment_id,
-        "flow_id": flow_id,
+    result = add_flow(url, label, solution_id=solution_id, url_type=url_type)
+
+    # If flows were added, also pull them
+    response = _result_to_dict(result)
+    added_labels = result.data.get("added_labels", [])
+    if added_labels:
+        pull_result = pull_flows_service(added_labels, force=False, auto_discover=False)
+        response["pull_messages"] = pull_result.messages
+
+    return response
+
+
+@mcp.tool
+def list_solutions(env_id: str) -> dict:
+    """List available solutions in an environment.
+
+    Use this before add_flow_tool with an environment URL to get solution IDs.
+
+    Args:
+        env_id: The environment ID (from a Power Automate URL)
+    """
+    result = get_available_solutions(env_id)
+    if not result.success:
+        return _result_to_dict(result)
+
+    # Format solutions for easy reading
+    solutions = result.data.get("solutions", [])
+    formatted = []
+    for sol in solutions:
+        formatted.append(
+            {
+                "solutionid": sol.get("solutionid"),
+                "name": sol.get("friendlyname", sol.get("uniquename", "Unknown")),
+                "version": sol.get("version", ""),
+            }
+        )
+
+    return {
+        "status": "success",
+        "solutions": formatted,
+        "messages": result.messages,
     }
-    if solution_id:
-        result["solution_id"] = solution_id
-    return result
 
 
 @mcp.tool
@@ -153,178 +130,55 @@ def remove_flow(label: str) -> dict:
     Args:
         label: The label of the flow to remove
     """
-    flows = load_flows()
-
-    if label not in flows:
-        return {"status": "error", "message": f"Flow '{label}' not found"}
-
-    flow_info = flows[label]
-    solution_id = flow_info.get("solution_id")
-
-    # Add to solution's ignored list if flow is from a tracked solution
-    if solution_id:
-        solutions = load_solutions()
-        if solution_id in solutions:
-            ignored = solutions[solution_id].setdefault("ignored", [])
-            if flow_info["flow_id"] not in ignored:
-                ignored.append(flow_info["flow_id"])
-            save_solutions(solutions)
-
-    del flows[label]
-    save_flows(flows)
-
-    file_deleted = False
-    flow_file = Path(f"{label}.json")
-    if flow_file.exists():
-        flow_file.unlink()
-        file_deleted = True
-
-    return {
-        "status": "removed",
-        "label": label,
-        "file_deleted": file_deleted,
-    }
+    result = delete_flow(label)
+    return _result_to_dict(result)
 
 
 @mcp.tool
-def pull_flows(labels: str | None = None) -> dict:
+def create_flow(target: str, name: str, from_label: str | None = None) -> dict:
+    """Create a new flow in Power Automate.
+
+    Args:
+        target: Either an environment URL or a solution label
+        name: Display name for the new flow
+        from_label: Optional label of existing flow to clone from
+    """
+    result = create_flow_service(target, name, from_label)
+    return _result_to_dict(result)
+
+
+@mcp.tool
+def pull_flows(labels: str | None = None, force: bool = False) -> dict:
     """Download flows from Power Automate to local JSON files.
 
     Args:
         labels: Comma-separated list of flow labels to pull (default: all)
+        force: If True, rename local files to match remote display names
     """
-    flows = load_flows()
-
-    if not flows:
-        return {"status": "error", "message": "No flows registered"}
-
     # Parse labels
+    label_list = None
     if labels:
         label_list = [l.strip() for l in labels.split(",") if l.strip()]
-        to_pull = {l: flows[l] for l in label_list if l in flows}
-        missing = [l for l in label_list if l not in flows]
-    else:
-        to_pull = flows
-        missing = []
 
-    if not to_pull:
-        return {"status": "error", "message": "No matching flows to pull"}
-
-    pulled = []
-    errors = []
-
-    for label, flow_info in to_pull.items():
-        env_id = flow_info["environment_id"]
-        flow_id = flow_info["flow_id"]
-
-        try:
-            flow_data = _api_request(get_flow, env_id, flow_id)
-            file_path = Path(f"{label}.json")
-            file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
-            pulled.append(label)
-        except Exception as e:
-            errors.append({"label": label, "error": str(e)})
-
-    # Git commit if successful
-    git_committed = False
-    if pulled and is_git_initialized():
-        files = [f"{l}.json" for l in pulled]
-        subprocess.run(["git", "add"] + files, check=True, capture_output=True)
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(
-                ["git", "commit", "-m", "Pulled from Power Automate"],
-                check=True,
-                capture_output=True,
-            )
-            git_committed = True
-
-    result = {
-        "status": "pulled",
-        "pulled": pulled,
-        "errors": errors,
-        "missing": missing,
-        "git_committed": git_committed,
-    }
-    if pulled and not is_git_initialized():
-        result["warning"] = "Git not initialized. Run 'init' tool to enable git tracking."
-    return result
+    result = pull_flows_service(label_list, force)
+    return _result_to_dict(result)
 
 
 @mcp.tool
-def push_flows(labels: str | None = None) -> dict:
+def push_flows(labels: str | None = None, message: str = "Pushed to Power Automate") -> dict:
     """Upload local flow JSON files to Power Automate.
 
     Args:
         labels: Comma-separated list of flow labels to push (default: all)
+        message: Git commit message
     """
-    flows = load_flows()
-
-    if not flows:
-        return {"status": "error", "message": "No flows registered"}
-
     # Parse labels
+    label_list = None
     if labels:
         label_list = [l.strip() for l in labels.split(",") if l.strip()]
-        to_push = {l: flows[l] for l in label_list if l in flows}
-        missing = [l for l in label_list if l not in flows]
-    else:
-        to_push = flows
-        missing = []
 
-    if not to_push:
-        return {"status": "error", "message": "No matching flows to push"}
-
-    pushed = []
-    errors = []
-    skipped = []
-
-    for label, flow_info in to_push.items():
-        file_path = Path(f"{label}.json")
-        if not file_path.exists():
-            skipped.append({"label": label, "reason": "file not found"})
-            continue
-
-        try:
-            flow_data = json.loads(file_path.read_text())
-        except json.JSONDecodeError as e:
-            errors.append({"label": label, "error": f"Invalid JSON: {e}"})
-            continue
-
-        env_id = flow_info["environment_id"]
-        flow_id = flow_info["flow_id"]
-
-        try:
-            _api_request(update_flow, flow_data, env_id, flow_id)
-            pushed.append(label)
-        except Exception as e:
-            errors.append({"label": label, "error": str(e)})
-
-    # Git commit if successful
-    git_committed = False
-    if pushed and is_git_initialized():
-        files = [f"{l}.json" for l in pushed]
-        subprocess.run(["git", "add"] + files, check=True, capture_output=True)
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if result.returncode != 0:
-            subprocess.run(
-                ["git", "commit", "-m", "Pushed to Power Automate"],
-                check=True,
-                capture_output=True,
-            )
-            git_committed = True
-
-    result = {
-        "status": "pushed",
-        "pushed": pushed,
-        "errors": errors,
-        "skipped": skipped,
-        "missing": missing,
-        "git_committed": git_committed,
-    }
-    if pushed and not is_git_initialized():
-        result["warning"] = "Git not initialized. Run 'init' tool to enable git tracking."
-    return result
+    result = push_flows_service(label_list, message)
+    return _result_to_dict(result)
 
 
 def main():

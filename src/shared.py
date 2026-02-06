@@ -78,11 +78,11 @@ def save_flows(flows: dict) -> None:
 def load_solutions() -> dict:
     """Load solutions registry from .pafs/solutions.json.
 
-    Returns a dict mapping solution_id to solution info:
+    Returns a dict mapping label to solution info:
     {
-        "solution-uuid": {
+        "my-solution": {
+            "solution_id": "solution-uuid",
             "environment_id": "env-uuid",
-            "name": "My Solution",
             "ignored": ["flow-uuid-1", "flow-uuid-2"]
         }
     }
@@ -93,6 +93,14 @@ def load_solutions() -> dict:
         return json.loads(SOLUTIONS_FILE.read_text())
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Invalid JSON in {SOLUTIONS_FILE}: {e}") from e
+
+
+def find_solution_by_id(solutions: dict, solution_id: str) -> tuple[str, dict] | None:
+    """Find a solution by its solution_id. Returns (label, info) or None."""
+    for label, info in solutions.items():
+        if info.get("solution_id") == solution_id:
+            return label, info
+    return None
 
 
 def save_solutions(solutions: dict) -> None:
@@ -149,30 +157,38 @@ def detect_url_type(url: str) -> str:
     Returns:
         'flow' if the URL contains /flows/
         'solution' if the URL contains /solutions/<solution_id>
-        'environment' if the URL ends with /solutions (no solution ID)
+        'environment' if the URL is an environment URL (with or without /solutions suffix)
     """
     if "/flows/" in url:
         return "flow"
     elif "/solutions" in url:
-        # Check if URL ends with /solutions (with optional trailing slash)
+        # Check if URL ends with /solutions (with optional trailing slash) - no solution ID
         if re.match(r"https://make\.powerautomate\.com/environments/[^/]+/solutions/?$", url):
             return "environment"
         return "solution"
+    elif re.match(r"https://make\.powerautomate\.com/environments/[^/]+/?$", url):
+        # Bare environment URL without /solutions suffix
+        return "environment"
     else:
-        raise ValueError(f"Cannot detect URL type (expected flow or solution URL): {url}")
+        raise ValueError(
+            f"Cannot detect URL type: {url}\n"
+            f"Expected a Power Automate URL with /environments/, /flows/, or /solutions/"
+        )
 
 
 def parse_environment_url(url: str) -> str:
     """Parse a Power Automate environment URL to extract environment_id.
 
     Supported URL formats:
+    - https://make.powerautomate.com/environments/<env_id>
+    - https://make.powerautomate.com/environments/<env_id>/
     - https://make.powerautomate.com/environments/<env_id>/solutions
     - https://make.powerautomate.com/environments/<env_id>/solutions/
 
     Returns:
         environment_id
     """
-    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)/solutions/?$"
+    pattern = r"https://make\.powerautomate\.com/environments/([^/]+)(?:/solutions)?/?$"
     match = re.match(pattern, url)
     if not match:
         raise ValueError(f"Invalid Power Automate environment URL format: {url}")

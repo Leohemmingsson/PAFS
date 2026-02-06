@@ -86,6 +86,16 @@ class TestParseEnvironmentUrl:
         env_id = parse_environment_url(url)
         assert env_id == "env-123"
 
+    def test_bare_environment_url(self):
+        url = "https://make.powerautomate.com/environments/env-123"
+        env_id = parse_environment_url(url)
+        assert env_id == "env-123"
+
+    def test_bare_environment_url_with_trailing_slash(self):
+        url = "https://make.powerautomate.com/environments/env-123/"
+        env_id = parse_environment_url(url)
+        assert env_id == "env-123"
+
     def test_invalid_environment_url(self):
         with pytest.raises(ValueError):
             parse_environment_url("https://example.com/not-an-environment-url")
@@ -114,46 +124,37 @@ class TestDetectUrlType:
         url = "https://make.powerautomate.com/environments/env-123/solutions/"
         assert detect_url_type(url) == "environment"
 
+    def test_bare_environment_url(self):
+        url = "https://make.powerautomate.com/environments/env-123"
+        assert detect_url_type(url) == "environment"
+
+    def test_bare_environment_url_with_trailing_slash(self):
+        url = "https://make.powerautomate.com/environments/env-123/"
+        assert detect_url_type(url) == "environment"
+
     def test_invalid_url(self):
         with pytest.raises(ValueError):
-            detect_url_type("https://make.powerautomate.com/environments/env-123")
+            detect_url_type("https://example.com/not-a-power-automate-url")
 
 
 class TestSanitizeLabel:
     """Tests for sanitize_label()."""
 
-    def test_simple_name(self):
-        assert sanitize_label("MyFlow") == "myflow"
-
-    def test_name_with_spaces(self):
-        assert sanitize_label("My Flow Name") == "my-flow-name"
-
-    def test_name_with_special_chars(self):
-        assert sanitize_label("My Flow! @#$% Name") == "my-flow-name"
-
-    def test_name_with_numbers(self):
-        assert sanitize_label("Flow123Test") == "flow123test"
-
-    def test_name_with_consecutive_spaces(self):
-        assert sanitize_label("My    Flow") == "my-flow"
-
-    def test_name_with_leading_trailing_special(self):
-        assert sanitize_label("---My Flow---") == "my-flow"
-
-    def test_empty_name(self):
-        assert sanitize_label("") == "unnamed-flow"
-
-    def test_only_special_chars(self):
-        assert sanitize_label("@#$%^&*") == "unnamed-flow"
-
-    def test_underscore_preserved(self):
-        assert sanitize_label("my_flow_name") == "my_flow_name"
-
-    def test_mixed_underscores_and_spaces(self):
-        assert sanitize_label("my_flow name") == "my_flow-name"
-
-    def test_leading_trailing_underscores_stripped(self):
-        assert sanitize_label("___my_flow___") == "my_flow"
+    @pytest.mark.parametrize("input_name,expected", [
+        ("MyFlow", "myflow"),
+        ("My Flow Name", "my-flow-name"),
+        ("My Flow! @#$% Name", "my-flow-name"),
+        ("Flow123Test", "flow123test"),
+        ("My    Flow", "my-flow"),
+        ("---My Flow---", "my-flow"),
+        ("", "unnamed-flow"),
+        ("@#$%^&*", "unnamed-flow"),
+        ("my_flow_name", "my_flow_name"),
+        ("my_flow name", "my_flow-name"),
+        ("___my_flow___", "my_flow"),
+    ])
+    def test_sanitize_label(self, input_name, expected):
+        assert sanitize_label(input_name) == expected
 
 
 class TestBuildFlowUrl:

@@ -8,27 +8,22 @@ from src.auth import _build_solutions_url, _is_login_page
 class TestIsLoginPage:
     """Tests for _is_login_page()."""
 
-    def test_microsoftonline_login(self):
-        assert _is_login_page("https://login.microsoftonline.com/common/oauth2/authorize")
+    @pytest.mark.parametrize("url", [
+        "https://login.microsoftonline.com/common/oauth2/authorize",
+        "https://login.microsoft.com/some/path",
+        "https://login.live.com/oauth20_authorize.srf",
+        "https://account.microsoft.com/auth",
+        "https://login.microsoftonline.com/common?client_id=abc",
+    ])
+    def test_is_login_page(self, url):
+        assert _is_login_page(url)
 
-    def test_microsoft_login(self):
-        assert _is_login_page("https://login.microsoft.com/some/path")
-
-    def test_live_login(self):
-        assert _is_login_page("https://login.live.com/oauth20_authorize.srf")
-
-    def test_account_microsoft(self):
-        assert _is_login_page("https://account.microsoft.com/auth")
-
-    def test_powerautomate_not_login(self):
-        assert not _is_login_page("https://make.powerautomate.com/environments/env-123")
-
-    def test_arbitrary_url_not_login(self):
-        assert not _is_login_page("https://example.com/login")
-
-    def test_partial_host_match(self):
-        # Ensure the host check works for URLs with query params
-        assert _is_login_page("https://login.microsoftonline.com/common?client_id=abc")
+    @pytest.mark.parametrize("url", [
+        "https://make.powerautomate.com/environments/env-123",
+        "https://example.com/login",
+    ])
+    def test_is_not_login_page(self, url):
+        assert not _is_login_page(url)
 
 
 class TestBuildSolutionsUrl:

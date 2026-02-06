@@ -8,6 +8,7 @@ import urllib.error
 from playwright.sync_api import Request, sync_playwright
 
 from .constants import LOGIN_HOSTS, TIMEOUT_SECONDS
+from .pa_api import PAFSAPIError
 from .shared import (
     BROWSER_DATA_DIR,
     clear_token,
@@ -165,8 +166,10 @@ def api_request_with_auth(func, auth_url: str, *args, use_dataverse_token: bool 
     if saved_token:
         try:
             return func(saved_token, *args, **kwargs)
-        except urllib.error.HTTPError as e:
-            if e.code != 401:
+        except (urllib.error.HTTPError, PAFSAPIError) as e:
+            # Get status code - HTTPError uses .code, PAFSAPIError uses .status_code
+            status = e.code if isinstance(e, urllib.error.HTTPError) else e.status_code
+            if status != 401:
                 raise
             print("Token expired, refreshing...")
             clear_token()
