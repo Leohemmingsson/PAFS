@@ -3,7 +3,7 @@
 import argparse
 import importlib.metadata
 
-from .commands import cmd_add, cmd_auth, cmd_create, cmd_del, cmd_init, cmd_list, cmd_pull, cmd_push
+from .commands import cmd_add, cmd_auth, cmd_create, cmd_del, cmd_init, cmd_list, cmd_prune, cmd_pull, cmd_push
 
 
 def main() -> None:
@@ -49,6 +49,9 @@ def main() -> None:
     # list
     subparsers.add_parser("list", help="List all registered flows")
 
+    # prune
+    subparsers.add_parser("prune", help="Remove flows deleted from Power Automate")
+
     # pull
     pull_parser = subparsers.add_parser("pull", help="Pull flows from Power Automate")
     pull_parser.add_argument(
@@ -59,7 +62,7 @@ def main() -> None:
     pull_parser.add_argument(
         "-f", "--force",
         action="store_true",
-        help="Clean re-sync: pull all flows and update labels to match current names",
+        help="Force pull: overwrite local changes, rename to match remote names, and remove deleted flows",
     )
 
     # push
@@ -96,6 +99,8 @@ def main() -> None:
         cmd_create(args.target, args.name, args.from_label)
     elif args.command == "list":
         cmd_list()
+    elif args.command == "prune":
+        cmd_prune()
     elif args.command == "pull":
         cmd_pull(parse_labels(args.labels), force=args.force)
     elif args.command == "push":

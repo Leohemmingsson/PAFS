@@ -10,6 +10,7 @@ from .services import (
     get_available_solutions,
     init_repo,
     list_flows_service,
+    prune_flows_service,
     pull_flows_service,
     push_flows_service,
 )
@@ -135,6 +136,17 @@ def remove_flow(label: str) -> dict:
 
 
 @mcp.tool
+def prune_flows() -> dict:
+    """Remove flows that no longer exist in Power Automate.
+
+    Checks each registered flow against the API and removes any that return 404.
+    Unlike remove_flow, pruned flows are NOT added to solution ignored lists.
+    """
+    result = prune_flows_service()
+    return _result_to_dict(result)
+
+
+@mcp.tool
 def create_flow(target: str, name: str, from_label: str | None = None) -> dict:
     """Create a new flow in Power Automate.
 
@@ -153,7 +165,7 @@ def pull_flows(labels: str | None = None, force: bool = False) -> dict:
 
     Args:
         labels: Comma-separated list of flow labels to pull (default: all)
-        force: If True, rename local files to match remote display names
+        force: If True, rename local files to match remote display names and remove deleted flows
     """
     # Parse labels
     label_list = None

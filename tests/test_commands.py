@@ -2,7 +2,15 @@
 
 import pytest
 
-from src.services import get_dataverse_url, add_solution_flows
+from src.pa_api import PAFSAPIError
+from src.mcp_server import prune_flows as mcp_prune_flows
+from src.services import (
+    add_solution_flows,
+    get_dataverse_url,
+    prune_flow,
+    prune_flows_service,
+    pull_flows_service,
+)
 
 
 class TestGetDataverseUrl:
@@ -167,3 +175,163 @@ class TestAddSolutionFlows:
         assert len(result.data["added_labels"]) == 2
         assert "same-name" in result.data["added_labels"]
         assert "same-name-2" in result.data["added_labels"]
+
+
+class TestPruneFlow:
+    """Tests for prune_flow()."""
+
+    def test_removes_from_dict_and_deletes_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        flow_file = tmp_path / "my-flow.json"
+        flow_file.write_text("{}")
+        flows = {"my-flow": {"environment_id": "env-1", "flow_id": "f-1"}}
+
+        msg = prune_flow(flows, "my-flow")
+
+        assert "my-flow" not in flows
+        assert not flow_file.exists()
+        assert "Pruned" in msg
+
+    def test_removes_from_dict_when_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        flows = {"my-flow": {"environment_id": "env-1", "flow_id": "f-1"}}
+
+        msg = prune_flow(flows, "my-flow")
+
+        assert "my-flow" not in flows
+        assert "Pruned" in msg
+
+
+class TestPruneFlowsService:
+    """Tests for prune_flows_service()."""
+
+    def test_prunes_404_flows(self, mocker, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "deleted-flow.json").write_text("{}")
+
+        mocker.patch("src.services.load_flows", return_value={
+            "good-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+            "deleted-flow": {"environment_id": "env-1", "flow_id": "f-2"},
+        })
+        mocker.patch("src.services.save_flows")
+        mocker.patch("src.services.git_commit_files", return_value=([], ""))
+
+        def mock_api(func, url, *args, **kwargs):
+            if "f-2" in url:
+                raise PAFSAPIError("Not found", status_code=404)
+            return {"properties": {"displayName": "Good Flow"}}
+
+        mocker.patch("src.services.api_request_with_auth", side_effect=mock_api)
+
+        result = prune_flows_service()
+
+        assert result.success
+        assert "deleted-flow" in result.data["pruned"]
+        assert "good-flow" not in result.data["pruned"]
+
+    def test_no_deleted_flows(self, mocker):
+        mocker.patch("src.services.load_flows", return_value={
+            "good-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+        })
+        mocker.patch("src.services.api_request_with_auth", return_value={})
+
+        result = prune_flows_service()
+
+        assert result.data["pruned"] == []
+        assert any("No deleted" in m for m in result.messages)
+
+    def test_handles_non_404_errors(self, mocker):
+        mocker.patch("src.services.load_flows", return_value={
+            "bad-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+        })
+        mocker.patch(
+            "src.services.api_request_with_auth",
+            side_effect=PAFSAPIError("Server error", status_code=500),
+        )
+
+        result = prune_flows_service()
+
+        assert result.data["pruned"] == []
+        assert any("Warning" in m for m in result.messages)
+
+
+class TestMcpPruneFlows:
+    """Tests for MCP prune_flows tool."""
+
+    def test_delegates_to_service(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.success = True
+        mock_result.messages = ["Pruned 1 flow(s)"]
+        mock_result.errors = []
+        mock_result.data = {"pruned": ["deleted-flow"]}
+        mocker.patch("src.mcp_server.prune_flows_service", return_value=mock_result)
+
+        response = mcp_prune_flows.fn()
+
+        assert response["status"] == "success"
+        assert "deleted-flow" in response["pruned"]
+
+
+class TestPullFlowsService404:
+    """Tests for pull_flows_service() 404 handling."""
+
+    def test_skips_deleted_flow_without_force(self, mocker):
+        mocker.patch("src.services.load_flows", return_value={
+            "good-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+            "deleted-flow": {"environment_id": "env-1", "flow_id": "f-2"},
+        })
+        mocker.patch("src.services.save_flows")
+        mocker.patch("src.services.git_commit_files", return_value=([], ""))
+
+        def mock_api(func, url, *args, **kwargs):
+            if "f-2" in url:
+                raise PAFSAPIError("Not found", status_code=404)
+            return {"properties": {"displayName": "Good Flow"}}
+
+        mocker.patch("src.services.api_request_with_auth", side_effect=mock_api)
+
+        result = pull_flows_service(force=False, auto_discover=False)
+
+        assert "good-flow" in result.data["pulled"]
+        assert "deleted-flow" not in result.data["pulled"]
+        assert "deleted-flow" in result.data["deleted"]
+        assert any("pafs prune" in m for m in result.messages)
+
+    def test_prunes_deleted_flow_with_force(self, mocker, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "deleted-flow.json").write_text("{}")
+
+        flows = {
+            "good-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+            "deleted-flow": {"environment_id": "env-1", "flow_id": "f-2"},
+        }
+        mocker.patch("src.services.load_flows", return_value=flows)
+        mocker.patch("src.services.save_flows")
+        mocker.patch("src.services.git_commit_files", return_value=([], ""))
+
+        def mock_api(func, url, *args, **kwargs):
+            if "f-2" in url:
+                raise PAFSAPIError("Not found", status_code=404)
+            return {"properties": {"displayName": "Good Flow"}}
+
+        mocker.patch("src.services.api_request_with_auth", side_effect=mock_api)
+
+        result = pull_flows_service(force=True, auto_discover=False)
+
+        assert "good-flow" in result.data["pulled"]
+        assert "deleted-flow" not in result.data["pulled"]
+        assert any("Pruned" in m for m in result.messages)
+        assert "deleted-flow" not in flows
+
+    def test_reraises_non_404_errors(self, mocker):
+        mocker.patch("src.services.load_flows", return_value={
+            "bad-flow": {"environment_id": "env-1", "flow_id": "f-1"},
+        })
+
+        mocker.patch(
+            "src.services.api_request_with_auth",
+            side_effect=PAFSAPIError("Server error", status_code=500),
+        )
+
+        with pytest.raises(PAFSAPIError):
+            pull_flows_service(force=False, auto_discover=False)

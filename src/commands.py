@@ -12,6 +12,7 @@ from .services import (
     get_unique_label,
     init_repo,
     list_flows_service,
+    prune_flows_service,
     pull_flows_service,
     push_flows_service,
 )
@@ -205,6 +206,12 @@ def cmd_list() -> None:
         print("Solutions:")
         for sol in solutions:
             print(f"  * {sol['label']}")
+
+
+def cmd_prune() -> None:
+    """Remove flows that no longer exist in Power Automate."""
+    result = prune_flows_service()
+    _print_result(result)
 
 
 def cmd_pull(labels: list[str] | None, force: bool = False) -> None:

@@ -8,6 +8,7 @@ from pathlib import Path
 from .auth import api_request_with_auth, get_tokens
 from .git import ensure_gitignore_has_pafs, git_commit_files, is_git_initialized
 from .pa_api import (
+    PAFSAPIError,
     create_flow as api_create_flow,
     get_environment,
     get_flow,
@@ -445,6 +446,19 @@ def delete_flow(label: str) -> ServiceResult:
     return result
 
 
+def prune_flow(flows: dict, label: str) -> str:
+    """Remove a deleted flow from the registry and delete its local file.
+
+    Unlike delete_flow(), does NOT add to solution ignored list.
+    Returns a message describing what was removed.
+    """
+    del flows[label]
+    flow_file = Path(f"{label}.json")
+    if flow_file.exists():
+        flow_file.unlink()
+    return f"Pruned '{label}'"
+
+
 def get_available_solutions(env_id: str) -> ServiceResult:
     """Get list of available solutions in an environment.
 
@@ -765,12 +779,30 @@ def pull_flows_service(
     existing_labels = set(flows.keys())
 
     # Iterate over copy since we may modify flows dict
+    deleted = []
     for label, flow_info in list(to_pull.items()):
         env_id = flow_info["environment_id"]
         flow_id = flow_info["flow_id"]
         flow_url = build_flow_url(env_id, flow_id)
 
-        flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
+        try:
+            flow_data = api_request_with_auth(get_flow, flow_url, env_id, flow_id)
+        except PAFSAPIError as e:
+            if e.status_code == 404:
+                if force:
+                    flow_file = Path(f"{label}.json")
+                    if flow_file.exists():
+                        pulled_files.append(str(flow_file))
+                    msg = prune_flow(flows, label)
+                    flows_modified = True
+                    result.messages.append(f"  {msg}")
+                else:
+                    deleted.append(label)
+                    result.messages.append(
+                        f"  '{label}' no longer exists in Power Automate (skipped)"
+                    )
+                continue
+            raise
 
         # Handle label rename when force flag is set
         final_label = label
@@ -793,6 +825,9 @@ def pull_flows_service(
         pulled_files.append(str(file_path))
         pulled_labels.append(final_label)
 
+    if deleted and not force:
+        result.messages.append("Run 'pafs prune' to remove deleted flows")
+
     if flows_modified:
         save_flows(flows)
 
@@ -810,6 +845,7 @@ def pull_flows_service(
     result.data["pulled"] = pulled_labels
     result.data["discovered"] = discovered
     result.data["renamed"] = renamed
+    result.data["deleted"] = deleted
     return result
 
 
@@ -889,4 +925,51 @@ def push_flows_service(
     result.data["pushed"] = pushed_labels
     result.data["skipped"] = skipped
     result.data["errors"] = push_errors
+    return result
+
+
+def prune_flows_service() -> ServiceResult:
+    """Remove flows that no longer exist in Power Automate."""
+    result = ServiceResult(success=True)
+    flows = load_flows()
+
+    if not flows:
+        result.messages.append("No flows registered")
+        result.data["pruned"] = []
+        return result
+
+    pruned_labels = []
+    removed_files = []
+
+    for label, flow_info in list(flows.items()):
+        env_id = flow_info["environment_id"]
+        flow_id = flow_info["flow_id"]
+        flow_url = build_flow_url(env_id, flow_id)
+
+        try:
+            api_request_with_auth(get_flow, flow_url, env_id, flow_id)
+        except PAFSAPIError as e:
+            if e.status_code == 404:
+                flow_file = Path(f"{label}.json")
+                if flow_file.exists():
+                    removed_files.append(str(flow_file))
+                msg = prune_flow(flows, label)
+                pruned_labels.append(label)
+                result.messages.append(msg)
+            else:
+                result.messages.append(f"Warning: Could not check '{label}': {e}")
+
+    if pruned_labels:
+        save_flows(flows)
+        if removed_files:
+            changed, commit_output = git_commit_files(
+                removed_files, "Pruned deleted flows"
+            )
+            if commit_output:
+                result.messages.append(commit_output)
+        result.messages.append(f"Pruned {len(pruned_labels)} flow(s)")
+    else:
+        result.messages.append("No deleted flows found")
+
+    result.data["pruned"] = pruned_labels
     return result
