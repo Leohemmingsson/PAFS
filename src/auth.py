@@ -1,11 +1,12 @@
 """Authentication module for PAFS - handles token capture and refresh."""
 
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
 
-from playwright.sync_api import Request, sync_playwright
+from playwright.sync_api import Error as PlaywrightError, Request, sync_playwright
 
 from .constants import LOGIN_HOSTS, TIMEOUT_SECONDS
 from .pa_api import PAFSAPIError
@@ -84,46 +85,58 @@ def get_tokens(
             captured_dataverse_token = token
             print("Dataverse API token captured")
 
-    BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    def launch_and_capture() -> None:
+        nonlocal captured_flow_token, captured_dataverse_token
 
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_DATA_DIR),
-            headless=False,
-        )
+        BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        page = context.pages[0]
-        page.on("request", on_request)
-        context.on("page", lambda new_page: new_page.on("request", on_request))
-
-        print("Opening browser...")
-        page.goto(auth_url, wait_until="commit")
-
-        # Poll until we capture required tokens or timeout
-        login_prompt_shown = False
-        poll_interval_ms = 500
-        max_polls = (timeout_seconds * 1000) // poll_interval_ms
-
-        for _ in range(max_polls):
-            # Check if we have all required tokens
-            have_required = captured_flow_token and (
-                not require_dataverse_token or captured_dataverse_token
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(BROWSER_DATA_DIR),
+                headless=False,
             )
-            if have_required:
-                break
 
-            try:
-                current_url = page.url
-                if _is_login_page(current_url):
-                    if not login_prompt_shown:
-                        print("Login required - complete authentication in browser")
-                        login_prompt_shown = True
-                page.wait_for_timeout(poll_interval_ms)
-            except Exception:
-                # Page might have been closed, check if we got a token
-                break
+            page = context.pages[0]
+            page.on("request", on_request)
+            context.on("page", lambda new_page: new_page.on("request", on_request))
 
-        context.close()
+            print("Opening browser...")
+            page.goto(auth_url, wait_until="commit")
+
+            # Poll until we capture required tokens or timeout
+            login_prompt_shown = False
+            poll_interval_ms = 500
+            max_polls = (timeout_seconds * 1000) // poll_interval_ms
+
+            for _ in range(max_polls):
+                # Check if we have all required tokens
+                have_required = captured_flow_token and (
+                    not require_dataverse_token or captured_dataverse_token
+                )
+                if have_required:
+                    break
+
+                try:
+                    current_url = page.url
+                    if _is_login_page(current_url):
+                        if not login_prompt_shown:
+                            print("Login required - complete authentication in browser")
+                            login_prompt_shown = True
+                    page.wait_for_timeout(poll_interval_ms)
+                except Exception:
+                    # Page might have been closed, check if we got a token
+                    break
+
+            context.close()
+
+    try:
+        launch_and_capture()
+    except PlaywrightError:
+        # Browser data may be incompatible (e.g. Chromium version change).
+        # Clear it and retry once.
+        print("Browser data incompatible, resetting...")
+        shutil.rmtree(BROWSER_DATA_DIR, ignore_errors=True)
+        launch_and_capture()
 
     if not captured_flow_token:
         raise RuntimeError("Failed to capture authentication token")

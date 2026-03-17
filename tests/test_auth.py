@@ -1,8 +1,11 @@
 """Tests for authentication module."""
 
-import pytest
+import shutil
 
-from src.auth import _build_solutions_url, _is_login_page
+import pytest
+from playwright.sync_api import Error as PlaywrightError
+
+from src.auth import _build_solutions_url, _is_login_page, get_tokens
 
 
 class TestIsLoginPage:
@@ -48,3 +51,67 @@ class TestBuildSolutionsUrl:
         url = ""
         result = _build_solutions_url(url)
         assert result == url  # Returns original URL
+
+
+class TestGetTokensBrowserDataRecovery:
+    """Tests for get_tokens() browser data incompatibility recovery."""
+
+    def test_retries_after_clearing_browser_data(self, mocker, tmp_path):
+        mocker.patch("src.auth.load_flow_token", return_value=None)
+        mocker.patch("src.auth.load_dataverse_token", return_value=None)
+        mocker.patch("src.auth.ensure_playwright_browsers")
+        mocker.patch("src.auth.BROWSER_DATA_DIR", tmp_path / "browser-data")
+        save_mock = mocker.patch("src.auth.save_tokens")
+
+        # Create browser-data dir with a sentinel file
+        browser_dir = tmp_path / "browser-data"
+        browser_dir.mkdir()
+        (browser_dir / "stale-profile").touch()
+
+        call_count = 0
+
+        def fake_launch_persistent_context(user_data_dir, headless):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise PlaywrightError("Target page, context or browser has been closed")
+
+            # Second call: simulate successful token capture via mock context
+            mock_context = mocker.MagicMock()
+            mock_page = mocker.MagicMock()
+            mock_page.url = "https://make.powerautomate.com/"
+            mock_context.pages = [mock_page]
+            mock_context.close = mocker.MagicMock()
+
+            # Simulate capturing a token via on_request callback
+            def fake_goto(url, wait_until=None):
+                pass
+            mock_page.goto = fake_goto
+
+            def fake_wait_for_timeout(ms):
+                pass
+            mock_page.wait_for_timeout = fake_wait_for_timeout
+
+            return mock_context
+
+        mock_playwright = mocker.MagicMock()
+        mock_playwright.chromium.launch_persistent_context = fake_launch_persistent_context
+
+        mock_cm = mocker.MagicMock()
+        mock_cm.__enter__ = mocker.MagicMock(return_value=mock_playwright)
+        mock_cm.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("src.auth.sync_playwright", return_value=mock_cm)
+
+        # We need to simulate the token being captured during the second launch.
+        # Patch save_tokens and set captured token via side effect on page.on
+        original_get_tokens = get_tokens.__wrapped__ if hasattr(get_tokens, '__wrapped__') else get_tokens
+
+        # Simpler approach: just verify the retry happens and browser-data is cleared.
+        # The function will raise RuntimeError because no token is captured in mock,
+        # but we can verify the retry behavior.
+        with pytest.raises(RuntimeError):
+            get_tokens("https://make.powerautomate.com/environments/env-1/flows/f-1/details")
+
+        assert call_count == 2
+        # Browser data dir should have been cleared between attempts
+        assert not (browser_dir / "stale-profile").exists()
