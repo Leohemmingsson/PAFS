@@ -35,6 +35,43 @@ def ensure_gitignore_has_pafs() -> bool:
     return True
 
 
+def git_changed_files(files: list[str]) -> list[str]:
+    """Return only files with uncommitted changes (staged, unstaged, or untracked).
+
+    If git isn't initialized, returns all files as a safe fallback.
+    """
+    if not is_git_initialized():
+        return list(files)
+
+    if not files:
+        return []
+
+    changed = set()
+
+    # Check for staged and unstaged changes (tracked files)
+    result = subprocess.run(
+        ["git", "diff", "HEAD", "--name-only", "--"] + files,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # No HEAD (fresh repo) — treat all files as changed
+        return list(files)
+    if result.stdout.strip():
+        changed.update(result.stdout.strip().splitlines())
+
+    # Check for untracked files
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--"] + files,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip():
+        changed.update(result.stdout.strip().splitlines())
+
+    return [f for f in files if f in changed]
+
+
 def git_commit_files(files: list[str], message: str) -> tuple[list[str], str]:
     """Add and commit files to git. Returns (changed_files, commit_output)."""
     if not is_git_initialized():

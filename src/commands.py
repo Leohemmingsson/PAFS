@@ -220,7 +220,7 @@ def cmd_pull(labels: list[str] | None, force: bool = False) -> None:
     _print_result(result)
 
 
-def cmd_push(labels: list[str] | None, message: str) -> None:
+def cmd_push(labels: list[str] | None, message: str, force: bool = False) -> None:
     """Push local JSON files to Power Automate."""
-    result = push_flows_service(labels, message)
+    result = push_flows_service(labels, message, force=force)
     _print_result(result)

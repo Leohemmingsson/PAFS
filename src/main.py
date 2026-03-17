@@ -66,11 +66,16 @@ def main() -> None:
     )
 
     # push
-    push_parser = subparsers.add_parser("push", help="Push flows to Power Automate")
+    push_parser = subparsers.add_parser("push", help="Push changed flows to Power Automate")
     push_parser.add_argument(
         "labels",
         nargs="?",
         help="Comma-separated labels to push (default: all)",
+    )
+    push_parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Push all flows regardless of local changes",
     )
     push_parser.add_argument(
         "-m",
@@ -104,7 +109,7 @@ def main() -> None:
     elif args.command == "pull":
         cmd_pull(parse_labels(args.labels), force=args.force)
     elif args.command == "push":
-        cmd_push(parse_labels(args.labels), args.message)
+        cmd_push(parse_labels(args.labels), args.message, force=args.force)
 
 
 if __name__ == "__main__":

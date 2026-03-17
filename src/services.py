@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .auth import api_request_with_auth, get_tokens
-from .git import ensure_gitignore_has_pafs, git_commit_files, is_git_initialized
+from .git import ensure_gitignore_has_pafs, git_changed_files, git_commit_files, is_git_initialized
 from .pa_api import (
     PAFSAPIError,
     create_flow as api_create_flow,
@@ -850,13 +850,16 @@ def pull_flows_service(
 
 
 def push_flows_service(
-    labels: list[str] | None = None, message: str = "Pushed to Power Automate"
+    labels: list[str] | None = None,
+    message: str = "Pushed to Power Automate",
+    force: bool = False,
 ) -> ServiceResult:
     """Push local JSON files to Power Automate.
 
     Args:
         labels: Specific labels to push, or None for all
         message: Git commit message
+        force: If True, push all flows regardless of git changes
     """
     result = ServiceResult(success=True)
     flows = load_flows()
@@ -882,15 +885,30 @@ def push_flows_service(
         result.data["pushed"] = []
         return result
 
+    # Filter to only changed files unless force is set
+    if not force:
+        file_paths = [f"{label}.json" for label in to_push]
+        changed_files = set(git_changed_files(file_paths))
+        unchanged = [l for l in to_push if f"{l}.json" not in changed_files]
+        to_push = {l: info for l, info in to_push.items() if f"{l}.json" in changed_files}
+        if unchanged:
+            result.data["unchanged"] = unchanged
+
+        if not to_push:
+            result.messages.append("No changed flows to push")
+            result.data["pushed"] = []
+            return result
+
     pushed_files = []
     pushed_labels = []
     skipped = []
     push_errors = []
 
+    result.messages.append("Pushing changed flows:")
     for label, flow_info in to_push.items():
         file_path = Path(f"{label}.json")
         if not file_path.exists():
-            result.messages.append(f"Skipping '{label}': {file_path} not found")
+            result.messages.append(f"  ! {label}: file not found")
             skipped.append({"label": label, "reason": "file not found"})
             continue
 
@@ -898,11 +916,10 @@ def push_flows_service(
         flow_id = flow_info["flow_id"]
         flow_url = build_flow_url(env_id, flow_id)
 
-        result.messages.append(f"Pushing '{label}'...")
         try:
             flow_data = json.loads(file_path.read_text())
         except json.JSONDecodeError as e:
-            result.messages.append(f"Skipping '{label}': invalid JSON in {file_path}")
+            result.messages.append(f"  ! {label}: invalid JSON")
             push_errors.append({"label": label, "error": f"Invalid JSON: {e}"})
             continue
 
@@ -910,10 +927,11 @@ def push_flows_service(
             api_request_with_auth(update_flow, flow_url, flow_data, env_id, flow_id)
             pushed_files.append(str(file_path))
             pushed_labels.append(label)
-            result.messages.append(f"  Pushed {file_path}")
+            result.messages.append(f"  * {label}")
         except Exception as e:
             push_errors.append({"label": label, "error": str(e)})
-            result.messages.append(f"  Error: {e}")
+            result.messages.append(f"  ! {label}")
+            result.messages.append(f"    {e}")
 
     if pushed_files:
         changed, commit_output = git_commit_files(pushed_files, message)
