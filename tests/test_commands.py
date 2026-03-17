@@ -282,6 +282,7 @@ class TestPullFlowsService404:
         })
         mocker.patch("src.services.save_flows")
         mocker.patch("src.services.git_commit_files", return_value=([], ""))
+        mocker.patch("src.services.git_changed_files", return_value=[])
 
         def mock_api(func, url, *args, **kwargs):
             if "f-2" in url:

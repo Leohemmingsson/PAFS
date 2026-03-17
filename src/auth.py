@@ -5,8 +5,9 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+from pathlib import Path
 
-from playwright.sync_api import Error as PlaywrightError, Request, sync_playwright
+from playwright.sync_api import Request, sync_playwright
 
 from .constants import LOGIN_HOSTS, TIMEOUT_SECONDS
 from .pa_api import PAFSAPIError
@@ -19,18 +20,35 @@ from .shared import (
 )
 
 
-def ensure_playwright_browsers() -> None:
-    """Install Playwright Chromium browser if not already installed."""
+def ensure_playwright_browsers() -> bool:
+    """Install Playwright Chromium browser if not already installed.
+
+    Returns True if a new browser version was installed (existing browser data
+    may be incompatible).
+    """
+    # Parse the dry-run to find the expected install location
     result = subprocess.run(
         [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
         capture_output=True,
         text=True,
     )
 
-    if "chromium" in result.stdout.lower() or result.returncode != 0:
-        print("Installing browser (first run)...")
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-        print("Browser installed")
+    already_installed = False
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("Install location:"):
+            path = line.removeprefix("Install location:").strip()
+            if Path(path).exists():
+                already_installed = True
+            break
+
+    if already_installed and result.returncode == 0:
+        return False
+
+    print("Installing browser (first run)...")
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    print("Browser installed")
+    return True
 
 
 def _is_login_page(url: str) -> bool:
@@ -65,7 +83,13 @@ def get_tokens(
         return saved_flow_token, saved_dataverse_token
 
     # Ensure browser is installed before launching
-    ensure_playwright_browsers()
+    browser_installed = ensure_playwright_browsers()
+
+    # New browser version makes old browser data incompatible — clear it proactively
+    # so the user doesn't lose their session from a crash-then-wipe recovery.
+    if browser_installed and BROWSER_DATA_DIR.exists():
+        print("Browser data incompatible, resetting...")
+        shutil.rmtree(BROWSER_DATA_DIR, ignore_errors=True)
 
     captured_flow_token: str | None = None
     captured_dataverse_token: str | None = None
@@ -129,14 +153,7 @@ def get_tokens(
 
             context.close()
 
-    try:
-        launch_and_capture()
-    except PlaywrightError:
-        # Browser data may be incompatible (e.g. Chromium version change).
-        # Clear it and retry once.
-        print("Browser data incompatible, resetting...")
-        shutil.rmtree(BROWSER_DATA_DIR, ignore_errors=True)
-        launch_and_capture()
+    launch_and_capture()
 
     if not captured_flow_token:
         raise RuntimeError("Failed to capture authentication token")

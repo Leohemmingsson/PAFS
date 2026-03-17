@@ -772,9 +772,12 @@ def pull_flows_service(
         result.data["discovered"] = discovered
         return result
 
+    result.messages.append(f"Pulling {len(to_pull)} flow(s):")
+
     pulled_files = []
     pulled_labels = []
     renamed = []
+    skipped_local = []
     flows_modified = False
     existing_labels = set(flows.keys())
 
@@ -821,6 +824,17 @@ def pull_flows_service(
                     renamed.append((label, final_label))
 
         file_path = Path(f"{final_label}.json")
+
+        # Skip files with uncommitted local changes unless force is set
+        if not force and file_path.exists():
+            local_changes = git_changed_files([str(file_path)])
+            if local_changes:
+                result.messages.append(
+                    f"  '{final_label}' has local changes, skipping (use -f to overwrite)"
+                )
+                skipped_local.append(final_label)
+                continue
+
         file_path.write_text(json.dumps(flow_data, indent=2) + "\n")
         pulled_files.append(str(file_path))
         pulled_labels.append(final_label)
@@ -831,7 +845,6 @@ def pull_flows_service(
     if flows_modified:
         save_flows(flows)
 
-    result.messages.append(f"Pulled {len(pulled_labels)} flow(s)")
     if pulled_files:
         changed, commit_output = git_commit_files(pulled_files, "Pulled from Power Automate")
         for f in changed:
@@ -846,6 +859,7 @@ def pull_flows_service(
     result.data["discovered"] = discovered
     result.data["renamed"] = renamed
     result.data["deleted"] = deleted
+    result.data["skipped_local"] = skipped_local
     return result
 
 
