@@ -120,38 +120,39 @@ def get_tokens(
                 headless=False,
             )
 
-            page = context.pages[0]
-            page.on("request", on_request)
-            context.on("page", lambda new_page: new_page.on("request", on_request))
+            try:
+                page = context.pages[0]
+                page.on("request", on_request)
+                context.on("page", lambda new_page: new_page.on("request", on_request))
 
-            print("Opening browser...")
-            page.goto(auth_url, wait_until="commit")
+                print("Opening browser...")
+                page.goto(auth_url, wait_until="commit")
 
-            # Poll until we capture required tokens or timeout
-            login_prompt_shown = False
-            poll_interval_ms = 500
-            max_polls = (timeout_seconds * 1000) // poll_interval_ms
+                # Poll until we capture required tokens or timeout
+                login_prompt_shown = False
+                poll_interval_ms = 500
+                max_polls = (timeout_seconds * 1000) // poll_interval_ms
 
-            for _ in range(max_polls):
-                # Check if we have all required tokens
-                have_required = captured_flow_token and (
-                    not require_dataverse_token or captured_dataverse_token
-                )
-                if have_required:
-                    break
+                for _ in range(max_polls):
+                    # Check if we have all required tokens
+                    have_required = captured_flow_token and (
+                        not require_dataverse_token or captured_dataverse_token
+                    )
+                    if have_required:
+                        break
 
-                try:
-                    current_url = page.url
-                    if _is_login_page(current_url):
-                        if not login_prompt_shown:
-                            print("Login required - complete authentication in browser")
-                            login_prompt_shown = True
-                    page.wait_for_timeout(poll_interval_ms)
-                except Exception:
-                    # Page might have been closed, check if we got a token
-                    break
-
-            context.close()
+                    try:
+                        current_url = page.url
+                        if _is_login_page(current_url):
+                            if not login_prompt_shown:
+                                print("Login required - complete authentication in browser")
+                                login_prompt_shown = True
+                        page.wait_for_timeout(poll_interval_ms)
+                    except Exception:
+                        # Page might have been closed, check if we got a token
+                        break
+            finally:
+                context.close()
 
     launch_and_capture()
 
