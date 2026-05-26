@@ -197,14 +197,14 @@ def cmd_list() -> None:
 
     if flows:
         print("Flows:")
-        for flow in flows:
+        for flow in sorted(flows, key=lambda f: f['label'].lower()):
             print(f"  * {flow['label']}")
 
     if solutions:
         if flows:
             print()
         print("Solutions:")
-        for sol in solutions:
+        for sol in sorted(solutions, key=lambda s: s['label'].lower()):
             print(f"  * {sol['label']}")
 
 
