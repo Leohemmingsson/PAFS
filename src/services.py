@@ -960,6 +960,33 @@ def push_flows_service(
     return result
 
 
+def hard_reset_service() -> ServiceResult:
+    """Delete all *.json files in the working directory, then pull -f to mirror PA.
+
+    Keeps .pafs/flows.json and .pafs/solutions.json so the registry survives.
+    """
+    result = ServiceResult(success=True)
+
+    deleted_files = []
+    for path in Path(".").glob("*.json"):
+        if path.is_file():
+            path.unlink()
+            deleted_files.append(path.name)
+
+    if deleted_files:
+        result.messages.append(f"Deleted {len(deleted_files)} local JSON file(s)")
+    else:
+        result.messages.append("No local JSON files to delete")
+
+    pull_result = pull_flows_service(labels=None, force=True)
+    result.messages.extend(pull_result.messages)
+    result.errors.extend(pull_result.errors)
+    result.success = pull_result.success
+    result.data["deleted_files"] = deleted_files
+    result.data["pulled"] = pull_result.data.get("pulled", [])
+    return result
+
+
 def prune_flows_service() -> ServiceResult:
     """Remove flows that no longer exist in Power Automate."""
     result = ServiceResult(success=True)

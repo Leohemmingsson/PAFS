@@ -10,6 +10,7 @@ from .services import (
     get_available_solutions,
     get_dataverse_url,
     get_unique_label,
+    hard_reset_service,
     init_repo,
     list_flows_service,
     prune_flows_service,
@@ -223,4 +224,25 @@ def cmd_pull(labels: list[str] | None, force: bool = False) -> None:
 def cmd_push(labels: list[str] | None, message: str, force: bool = False) -> None:
     """Push local JSON files to Power Automate."""
     result = push_flows_service(labels, message, force=force)
+    _print_result(result)
+
+
+def cmd_hard_reset(skip_confirm: bool = False) -> None:
+    """Delete all local *.json files and re-pull from Power Automate to mirror state."""
+    if not skip_confirm:
+        print(
+            "This will delete all *.json files in the current directory "
+            "and re-pull every tracked flow from Power Automate."
+        )
+        try:
+            answer = input("Are you sure? (y/N): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            print("Cancelled")
+            return
+        if answer not in ("y", "yes"):
+            print("Cancelled")
+            return
+
+    result = hard_reset_service()
     _print_result(result)

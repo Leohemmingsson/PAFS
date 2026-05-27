@@ -3,7 +3,18 @@
 import argparse
 import importlib.metadata
 
-from .commands import cmd_add, cmd_auth, cmd_create, cmd_del, cmd_init, cmd_list, cmd_prune, cmd_pull, cmd_push
+from .commands import (
+    cmd_add,
+    cmd_auth,
+    cmd_create,
+    cmd_del,
+    cmd_hard_reset,
+    cmd_init,
+    cmd_list,
+    cmd_prune,
+    cmd_pull,
+    cmd_push,
+)
 
 
 def main() -> None:
@@ -84,6 +95,17 @@ def main() -> None:
         help="Git commit message",
     )
 
+    # hard-reset
+    hard_reset_parser = subparsers.add_parser(
+        "hard-reset",
+        help="Delete local *.json files and re-pull everything from Power Automate",
+    )
+    hard_reset_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+
     args = parser.parse_args()
 
     # Parse comma-separated labels if provided
@@ -110,6 +132,8 @@ def main() -> None:
         cmd_pull(parse_labels(args.labels), force=args.force)
     elif args.command == "push":
         cmd_push(parse_labels(args.labels), args.message, force=args.force)
+    elif args.command == "hard-reset":
+        cmd_hard_reset(skip_confirm=args.yes)
 
 
 if __name__ == "__main__":
